@@ -6,11 +6,13 @@
 
 // have an halinterface
 
+#![allow(dead_code)]
+extern crate crc;
 
 const LEN: usize = 32;
 pub trait Serialio {
-	fn readdata(&self, len:u32) -> ( [u8; LEN] );
-	fn writedata(&self,[u8 ; LEN],len:u32) ; 
+	fn readdata(&mut self, _len:u16) -> ( Vec<u8> );
+	fn writedata(&mut self, Vec<u8> ,_len:u32) ; 
 }
 
 struct Encoder {
@@ -21,7 +23,16 @@ struct Encoder {
 
 
 impl Encoder {
-	fn encode(&self) -> [u8; LEN] {
+	fn encode(&mut self) -> Vec<u8>  {
+		use crc::*;
+		//  [0x01,0x00,0x12,0x00]
+		// CRC is caclulated over transport layer bytes only
+		// , 0xb1, 0x2e, 0x45, 0x93
+		let transport = [0x0c,0x00,0x01,0x00,0x01,0x00,0x02,0x40,0x02,0x00,0x09,0x10,0x00,0x00,0x07,0x00,0x00,0x00  ];
+		let crc = crc32::checksum_ieee(&transport);
+		println!("{:x}",crc);
+
+
 		self.myio.readdata(4)
 	}
 }
@@ -29,36 +40,51 @@ impl Encoder {
 
 
 fn main() {
-	let dummy = DummyInterface{};
+	let mut dummy = DummyInterface::new();
 	let mut encoder = Encoder{internaldata: 0, myio: dummy};
 	encoder.encode();
 }
 struct DummyInterface {
-	
+	readdatav:  Vec<Vec<u8>>,
+	writedatav: Vec<Vec<u8>>,
 }
 
 impl Serialio for DummyInterface {
-	fn readdata(&self, len:u32) -> ([u8; LEN]){
-		let mut buf =[0xff ; LEN];
-		buf[0..4].clone_from_slice(&[0x55,0x55,0x10,0x20]);
+	fn readdata(&mut self, len:u16) -> Vec<u8> {
+		let  buf  = self.readdatav.pop();
+		let  buf = buf.unwrap();
+		use std::usize;
+
+		assert!( len as usize == buf.len()) ;  // Did dummy provide the expected lenght of data
 		buf
 	}
-	fn writedata(&self,buffer:[u8; LEN],len:u32){
-		
+	fn writedata(&mut self,buffer:Vec<u8> ,_len:u32){
+		self.writedatav.push(buffer)
 		
 	}
-	
-	
+
 }
+impl DummyInterface{
+	fn new() -> Self{
+		DummyInterface {
+		readdatav: vec!(),writedatav: vec!() }
+	}
+}
+
 #[cfg(test)]
 mod tests {
 	#[test]
-	fn it_works() {
+	fn delete_all_templates() {
 		use super::*;
-		let dummy = DummyInterface{};
+		let mut dummy = DummyInterface::new();
+		dummy.readdatav.push(vec!(0,0,01,0));
+	    dummy.readdatav.push(vec!(0x3,0x7f,01,0x7f));
+		dummy.readdatav.push(vec!(0xff,0x7f,01,0x7f));
+
+		
 		let mut encoder = Encoder{internaldata: 0, myio: dummy};
 		encoder.encode();
-		let dummy = encoder.myio;
+//		let dummy = encoder.myio;
 	}
 	/*
 		#[test]

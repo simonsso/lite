@@ -1,6 +1,7 @@
 [package]
 name = "hello_rust"
 version = "0.1.0"
-authors = ["Fredrik <simson@thesimson.net>"]
+authors = ["Fredrik SIMONSSON <simson@thesimson.net>"]
 
 [dependencies]
+crc = "^1.0.0"
