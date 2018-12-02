@@ -18,3 +18,7 @@ default-features = false
 [dependencies.embedded-hal]
 features = ["unproven"]
 version = "0.2"
+
+[lib]
+name = "bmlite"
+path = "src/bmlitelib.rs"

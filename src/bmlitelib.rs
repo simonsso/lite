@@ -26,7 +26,7 @@ extern crate nb;
 use embedded_hal::digital::{InputPin,OutputPin};
 use embedded_hal::blocking::spi::Transfer;
 use embedded_hal::spi::FullDuplex;
-use byteorder::{ByteOrder,BigEndian};
+use byteorder::{ByteOrder,LittleEndian};
 
 pub struct BmLite<SPI,CS,RST,IRQ> {
 	spi: SPI,
@@ -38,6 +38,7 @@ pub struct BmLite<SPI,CS,RST,IRQ> {
 pub enum Error<E>{
     UnexpectedResponse,
     Timeout,
+    CRCError,
     HalErr(E),
 }
 
@@ -81,6 +82,7 @@ where  SPI: Transfer<u8, Error = E>,
 		let crc  = crc/256;
 		transport.push((0xFF& crc )as u8);
 
+        let cmd = (transport[11],transport[10]);
 		//Add linklayer headers
 		transport[0]=0x1;
 		transport[1]=0x0;
@@ -108,31 +110,51 @@ where  SPI: Transfer<u8, Error = E>,
         let mut v0:Vec<u8> = [0,0,0,0].to_vec();
         let v0 = self.spi.transfer(&mut v0).map_err(Error::HalErr)?;
         self.cs.set_high();
-        if ! (v0[0] == 0 && v0[1] == 0xf && v0[2] == 0x01 && v0[3] == 0x7f ) {
-         //handle error here should be 0 0 size 0 or something
-            //return Err(());
-        }
-        let xxx:usize = 4 + v0[2] as usize;
-        let mut v:Vec<u8> = Vec::with_capacity(xxx);
+        // v is now chanel and size
+        // if ! (v0[0] == 0 && v0[1] == 0xf && v0[2] == 0x01 && v0[3] == 0x7f ) {
+        //     return Err(Error::UnexpectedResponse)
+        //
+        // }
+        let transportsize:usize = 4 + v0[2] as usize;
+        let mut v:Vec<u8> = Vec::with_capacity(transportsize);
         self.cs.set_low();
-        for _i in 0..xxx {
+        for _i in 0..transportsize {
            let _ans=block!(self.spi.send(0)).map_err(Error::HalErr)?;
            let ans:u8 = block!(self.spi.read()).map_err(Error::HalErr)?;
            v.push(ans);
         }
         self.cs.set_high();
-		let crc = crc32::checksum_ieee(&v[0..xxx-4]);
+		let crc = crc32::checksum_ieee(&v[0..transportsize-4]);
 
-        if crc == BigEndian::read_u32(&v[xxx-4..xxx]){
+        if crc == LittleEndian::read_u32(&v[transportsize-4..transportsize]){
             self.cs.set_low();
-            let mut ack:Vec<u8> = [0x7f,0xff,0x01,0x7f].to_vec();
+            let mut ack = [0x7f,0xff,0x01,0x7f];
             let mut ack = self.spi.transfer(&mut ack).map_err(Error::HalErr)?;
             self.cs.set_high();
-            return Ok(1);
         }else {
             //crc error
-            return Ok(99);
+            return Err(Error::CRCError)
         }
+
+        // verify sizes v[0] and v[1] -- ignored
+         
+        // v[2:3] seq num
+        // v[4:5] seq len -- for multi frame package this will be where we have reading of multi data
+
+        if (v[2],v[3]) != (v[4],v[5]) {
+             // multi packet not expected and supported yet
+             return Err(Error::UnexpectedResponse)
+        }
+
+        // v[6:7] application package:  (maybe num commands)
+        // v[8:9] CMD should be same as CMD sent.
+        if cmd != (v[9],v[8]){
+             // command response did not match command.
+             return Err(Error::UnexpectedResponse)
+        }
+        // v have a valid response
+        // v[0]-v[12] Transport headers ignored.
+        // :
 
         Ok(0)
 	}
