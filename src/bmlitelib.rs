@@ -72,6 +72,7 @@ where  SPI: Transfer<u8, Error = E>,
 		// , 0xb1, 0x2e, 0x45, 0x93
 		// 0x93,0x45,0x2e,0xb1
 		let mut transport:Vec<u8> = [0,0,0,0,0x0c,0x00,0x01,0x00,0x01,0x00,0x02,0x40,0x02,0x00,0x09,0x10,0x00,0x00,0x07,0x00,0x00,0x00].to_vec();
+        let cmd = (transport[11],transport[10]);
 
 		let crc = crc32::checksum_ieee(&transport[4..]);
 		transport.push((0xFF& crc )as u8);
@@ -82,7 +83,6 @@ where  SPI: Transfer<u8, Error = E>,
 		let crc  = crc/256;
 		transport.push((0xFF& crc )as u8);
 
-        let cmd = (transport[11],transport[10]);
 		//Add linklayer headers
 		transport[0]=0x1;
 		transport[1]=0x0;
@@ -166,58 +166,75 @@ fn main() {
 	let mut encoder = BmLite{internaldata: 0, myio: dummy};
 	encoder.encode();
 }
-struct DummyInterface {
-	readdatav:  Vec<Vec<u8>>,
-	writedatav: Vec<Vec<u8>>,
-}
-
-impl Serialio for DummyInterface {
-	fn readdata(&mut self, len:usize) -> Vec<u8> {
-		let  buf  = self.readdatav.pop();
-		let  buf = buf.unwrap();
-
-		assert!( len == buf.len()) ;  // Did dummy provide the expected lenght of data
-		buf
-	}
-	fn writedata(&mut self,buffer:Vec<u8> ,_len:usize){
-		self.writedatav.push(buffer)
-	}
-
-}
 */
 #[cfg(test)]
-impl DummyInterface{
-	fn new() -> Self{
-		DummyInterface {
-		readdatav: vec!(),writedatav: vec!() }
+mod tests {
+struct DummyInterface {
+	data:  Vec<bool>,
+}
+
+impl new for DummyInterface{
+    pub fn new() -> Self {
+        DummyInterface
+    }
+    
+
+}
+impl super::OutputPin for DummyInterface {
+	fn set_low(&mut self ) {
+		
+	}
+	fn set_high(&mut self) {
+	   
 	}
 }
-mod tests {
+
+impl super::InputPin for DummyInterface {
+	fn is_high(&self ) -> bool {
+		self.data.pop()
+	}
+	fn is_low(&self) -> bool{
+	    ! self.is_high()
+	}
+}
+
+
+extern crate embedded_hal_mock;
+extern crate std;
+
+use tests::embedded_hal_mock::spi::{Mock as SpiMock, Transaction as SpiTransaction};
+use tests::std::vec::*;
+
+
 	#[test]
 	fn delete_all_templates() {
 		use super::*;
-		let vec1=vec![1,2,3];
-		let vec2=vec![1,2,3];
-		assert!(vec1 == vec2);
 
+		//dummy.readdatav.push(vec!(0,0,01,0));
+	    //dummy.readdatav.push(vec!(0x3,0x7f,01,0x7f));
+		//dummy.readdatav.push(vec!(0xff,0x7f,01,0x7f));
+        // Configure expectations
 
-		let mut dummy = DummyInterface::new();
-		dummy.readdatav.push(vec!(0,0,01,0));
-	    dummy.readdatav.push(vec!(0x3,0x7f,01,0x7f));
-		dummy.readdatav.push(vec!(0xff,0x7f,01,0x7f));
+		let refvec:Vec<u8> = [0x01,0x00,0x12,0x00,0x0c,0x00,0x01,0x00,0x01,0x00,0x02,0x40,0x02,0x00,0x09,0x10,0x00,0x00,0x07,0x00,0x00,0x00,0xb1,0x2e,0x45,0x93].to_vec();
+        let expectations = [
+            SpiTransaction::write([2, 2].to_vec()),
+            SpiTransaction::transfer([3, 4].to_vec(), refvec),
+        ];
 
+        let mut spi = SpiMock::new(&expectations);
 
-		let mut encoder = BmLite{internaldata: 0, myio: dummy};
-		encoder.encode();
-		let mut wb=encoder.myio.writedatav;
-		let tmp=wb.pop().unwrap();
-		let refvec:Vec<u8> = vec!(0x01,0x00,0x12,0x00,0x0c,0x00,0x01,0x00,0x01,0x00,0x02,0x40,0x02,0x00,0x09,0x10,0x00,0x00,0x07,0x00,0x00,0x00,0xb1,0x2e,0x45,0x93);
-		assert!( tmp[4..]==refvec[4..]);
-		assert!( &tmp[0..4]==&refvec[0..4]);
+        let dummy_cs = DummyInterface::new();
+        let dummy_irq = DummyInterface::new();
+        let dummy_reset = DummyInterface::new();
 
-		let refvec:Vec<u8> = vec!(0x01,0x00,0x12,0x00,0x0c,0x00,0x01,0x00,0x01,0x00,0x02,0x40,0x02,0x00,0x09,0x10,0x00,0x00,0x07,0x00,0x00,0x00,0xff,0xff,0xff,0xff);
+		let mut encoder = BmLite{spi, dummy_cs,dummy_reset,dummy_irq };
+		encoder.delete_all();
+		// assert!( tmp[4..]==refvec[4..]);
+		// assert!( &tmp[0..4]==&refvec[0..4]);
 
-		assert!( &tmp != &refvec)
+		let refvec:Vec<u8> = [0x01,0x00,0x12,0x00,0x0c,0x00,0x01,0x00,0x01,0x00,0x02,0x40,0x02,0x00,0x09,0x10,0x00,0x00,0x07,0x00,0x00,0x00,0xff,0xff,0xff,0xff].to_vec();
+
+        // must implement a teardown first  then call  spi.done();
 
 	}
 	/*
