@@ -42,7 +42,16 @@ pub enum Error<E>{
     HalErr(E),
 }
 
+enum SensorResp{
+    ARG_Result =  0x2001,
+    ARG_Count =   0x2002,
+    ARG_Timeout = 0x5001,
+    ARG_Version = 0x6004,
+}
 
+fn as_u16(h:u8,l:u8) -> u16{
+    ((h as u16)<<8)|(l as u16)
+}
 
 impl <SPI,CS,RST,IRQ, E> BmLite<SPI,CS,RST,IRQ>
 where  SPI: Transfer<u8, Error = E>,
@@ -65,15 +74,10 @@ where  SPI: Transfer<u8, Error = E>,
         //ToDoReset internal data strutures when they exist
         Ok(0)
     }
-	pub fn delete_all(&mut self) -> Result<u8, Error<E>>  {
+    fn link(&mut self, appldata:Vec<u8> ) ->  Result<(Vec<u8>), Error<E>> {
+		let mut transport:Vec<u8> = [0,0,0,0,0x0c,0x00,0x01,0x00,0x01,0].to_vec();
+        transport.extend(appldata.iter());
 		use crc::*;
-		//  [0x01,0x00,0x12,0x00]
-		// CRC is caclulated over transport layer bytes only but little endian(sic!)
-		// , 0xb1, 0x2e, 0x45, 0x93
-		// 0x93,0x45,0x2e,0xb1
-		let mut transport:Vec<u8> = [0,0,0,0,0x0c,0x00,0x01,0x00,0x01,0x00,0x02,0x40,0x02,0x00,0x09,0x10,0x00,0x00,0x07,0x00,0x00,0x00].to_vec();
-        let cmd = (transport[11],transport[10]);
-
 		let crc = crc32::checksum_ieee(&transport[4..]);
 		transport.push((0xFF& crc )as u8);
 		let crc  = crc/256;
@@ -148,15 +152,31 @@ where  SPI: Transfer<u8, Error = E>,
 
         // v[6:7] application package:  (maybe num commands)
         // v[8:9] CMD should be same as CMD sent.
-        if cmd != (v[9],v[8]){
+        Ok(v.split_off(6))
+    }
+	pub fn delete_all(&mut self) -> Result<u8, Error<E>>  {
+		let mut transport:Vec<u8> = [0x02, 0x40,0x02,0x00,0x09,0x10,0x00,0x00,0x07,0x00,0x00,0x00].to_vec();
+        let cmd = (transport[1],transport[0]);
+        let resp=self.link(transport)?;
+
+
+        if resp.len() <6 {
+             // expect at lease some data here
+             return Err(Error::UnexpectedResponse)
+        }
+        if cmd != (resp[1],resp[0]){
              // command response did not match command.
              return Err(Error::UnexpectedResponse)
         }
-        // v have a valid response
-        // v[0]-v[12] Transport headers ignored.
-        // :
+        // expected data len = 1
+        //          Result == ARG_Result
+        // val ==1 
+        if as_u16(resp[3],resp[2]) != SensorResp::ARG_Result as u16 {
+             return Err(Error::UnexpectedResponse)
+        }
+        let resp_len = as_u16(resp[4],resp[5]);
 
-        Ok(0)
+        Ok(resp[7])
 	}
 }
 
