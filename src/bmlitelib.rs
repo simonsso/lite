@@ -177,23 +177,37 @@ where  SPI: Transfer<u8, Error = E>,
         // expected data len = 1
         //          Result == ARG_Result
         // val ==1 
-        if as_u16(resp[3],resp[2]) != SensorResp::ARG_Result as u16 {
+        if as_u16(resp[5],resp[4]) != SensorResp::ARG_Result as u16 {
              return Err(Error::UnexpectedResponse)
         }
         Ok(0)
     }
-	pub fn capture(&mut self) -> Result<u8, Error<E>>  {
+    // Timeout in ms but 0 waits forever
+	pub fn capture(&mut self, timeout:u32) -> Result<u8, Error<E>>  {
         //                           CMD_Capure   aNum
 		let mut transport:Vec<u8> = [0x01, 0x00, 0x0,0x0].to_vec();
+        if timeout != 0 {
+            transport[2]=1;
+            transport.push(0x01);
+            transport.push(0x50);    //5001 TimeOut
+            transport.push(0x04);    // Size 4 bytes
+            transport.push(0x00);
+            transport.push((0xFF& timeout )as u8);
+            let timeout  = timeout/256;
+            transport.push((0xFF& timeout )as u8);
+            let timeout  = timeout/256;
+            transport.push((0xFF& timeout )as u8);
+            let timeout  = timeout/256;
+            transport.push((0xFF& timeout )as u8);
+        }
         let cmd = (transport[1],transport[0]);
         let resp=self.link(transport)?;
-
 
         if resp.len() <6 {
              // expect at lease some data here
              return Err(Error::UnexpectedResponse)
         }
-        let resp_len = as_u16(resp[2],resp[3]);
+        let resp_len = as_u16(resp[3],resp[2]);
         if resp_len ==1 && as_u16(resp[5],resp[4]) == SensorResp::ARG_Result as u16 {
             return Ok(resp[7])
         }
@@ -221,7 +235,7 @@ where  SPI: Transfer<u8, Error = E>,
         if as_u16(resp[5],resp[4]) != SensorResp::ARG_Result as u16 {
              return Err(Error::UnexpectedResponse)
         }
-        let resp_len = as_u16(resp[2],resp[3]);
+        let resp_len = as_u16(resp[3],resp[2]);
 
         Ok(resp[7])
 	}
