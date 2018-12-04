@@ -33,21 +33,23 @@ pub struct BmLite<SPI,CS,RST,IRQ> {
 	cs: CS,
     rst: RST,
     irq: IRQ,
+    enrolledfingers: u8,
 }
 
 pub enum Error<E>{
     UnexpectedResponse,
     Timeout,
     CRCError,
+    NoMatch,
     HalErr(E),
 }
 
-enum SensorResp{
-    ARG_Result =  0x2001,
-    ARG_Count =   0x2002,
-    ARG_Timeout = 0x5001,
-    ARG_Version = 0x6004,
-}
+const    ARG_RESULT:u16 =  0x2001;
+const    ARG_COUNT:u16 =   0x2002;
+const    ARG_TIMEOUT:u16 = 0x5001;
+const    ARG_VERSION:u16 = 0x6004;
+const    ARG_MATCH:u16 =   0x000A;
+const    ARG_ID:u16 =      0x0006;
 
 fn as_u16(h:u8,l:u8) -> u16{
     ((h as u16)<<8)|(l as u16)
@@ -63,14 +65,22 @@ where  SPI: Transfer<u8, Error = E>,
 	    /// Creates a new driver from an SPI peripheral and a chip select
     /// digital I/O pin.
     pub fn new(spi: SPI, cs: CS, rst: RST, irq: IRQ) -> Self {
-        let en= BmLite { spi: spi, cs: cs, rst: rst, irq: irq };
+        let en= BmLite { spi: spi, cs: cs, rst: rst, irq: irq , enrolledfingers : 0 };
 
         en
     }
 	pub fn reset(&mut self) -> Result<u8, Error<E>>  {
-        self.rst.set_low();
+        let mut timeout = 300000;
+        while timeout > 0{
+            self.rst.set_low();
+            timeout -= 1;
+        }
         //ToDo add a delay here.
-        self.rst.set_high();
+        timeout = 400000;
+        while timeout > 0{
+            self.rst.set_high();
+            timeout -= 1;
+        }
         //ToDoReset internal data strutures when they exist
         Ok(0)
     }
@@ -102,7 +112,12 @@ where  SPI: Transfer<u8, Error = E>,
         let _ans = self.spi.transfer( &mut transport).map_err(Error::HalErr)?;
         self.cs.set_high();
 
+        let mut timeout:i32 = 500_000;
         while self.irq.is_low(){
+            timeout -=1;
+            if timeout < 0 {
+                return Err(Error::Timeout)
+            }
         }
         self.cs.set_low();
         let mut ack:Vec<u8> = [0,0,0,0].to_vec();
@@ -113,7 +128,12 @@ where  SPI: Transfer<u8, Error = E>,
         if ! (ack[0] == 0x7f && ack[1] == 0xff && ack[2] == 0x01 && ack[3] == 0x7f ) {
             return Err(Error::UnexpectedResponse)
         }
+        //timeout = 500_000;
         while self.irq.is_low(){
+         //   timeout -=1;
+         //   if timeout < 0 {
+         //       return Err(Error::Timeout)
+         //   }
         }
         self.cs.set_low();
         let mut v0:Vec<u8> = [0,0,0,0].to_vec();
@@ -175,9 +195,9 @@ where  SPI: Transfer<u8, Error = E>,
              return Err(Error::UnexpectedResponse)
         }
         // expected data len = 1
-        //          Result == ARG_Result
+        //          Result == ARG_RESULT
         // val ==1
-        if as_u16(resp[5],resp[4]) != SensorResp::ARG_Result as u16 {
+        if as_u16(resp[5],resp[4]) != ARG_RESULT {
              return Err(Error::UnexpectedResponse)
         }
         Ok(0)
@@ -207,8 +227,8 @@ where  SPI: Transfer<u8, Error = E>,
              // expect at lease some data here
              return Err(Error::UnexpectedResponse)
         }
-        let resp_len = as_u16(resp[3],resp[2]);
-        if resp_len ==1 && as_u16(resp[5],resp[4]) == SensorResp::ARG_Result as u16 {
+        let argc = as_u16(resp[3],resp[2]);
+        if argc ==1 && as_u16(resp[5],resp[4]) == ARG_RESULT {
             return Ok(resp[7])
         }
         Err(Error::UnexpectedResponse)
@@ -216,13 +236,16 @@ where  SPI: Transfer<u8, Error = E>,
 
 	pub fn enroll(&mut self ) -> Result<u32, Error<E>>  {
         self.do_enroll(0x03)?; //begin
-        let mut enrolling = true;
-        while (enrolling){
+        let mut enrolling = 100;
+        while enrolling > 0{
             self.waitfingerup(0)?;
             self.capture(0)?;
-            self.do_enroll(0x04)?; //add image
+            enrolling = self.do_enroll(0x04)?; //add image
         }
         self.do_enroll(0x05)?; //done
+        let e = self.enrolledfingers;
+        self.do_savetemplate(e)?;
+        self.enrolledfingers += 1;
         Ok(0)
     }
 	pub fn do_enroll(&mut self, state:u32) -> Result<u32, Error<E>>  {
@@ -242,17 +265,210 @@ where  SPI: Transfer<u8, Error = E>,
         let cmd = (transport[1],transport[0]);
         let resp=self.link(transport)?;
 
-        if resp.len() <6 {
+        // Parse result args
+        let len = resp.len();
+        if len <6 {
              // expect at lease some data here
              return Err(Error::UnexpectedResponse)
         }
-        let resp_len = as_u16(resp[3],resp[2]);
-        if resp_len ==1 && as_u16(resp[5],resp[4]) == SensorResp::ARG_Result as u16 {
-            return Ok(resp[7].into())
+        if cmd != (resp[1],resp[0]){
+             // command response did not match command.
+             return Err(Error::UnexpectedResponse)
         }
-        // ToDo handle all responses here
+        let argc = as_u16(resp[3],resp[2]);
+        let mut current:usize = 4;
+        // handle all responses here
+        let mut remaining:u32 = 0;
+        let mut ok_resp = false;
+        for _i in 0..argc{
+            if len < current+4 {
+                // Parse error
+                return Err(Error::UnexpectedResponse)
+            }
+            let arg = as_u16(resp[1+current],resp[current]) ;
+            let arglen = as_u16(resp[3+current],resp[2+current]) as usize ;
+            current +=4;
+            if len < current+arglen {
+                // Parse error
+                return Err(Error::UnexpectedResponse)
+            }
+            match arg {
+               ARG_RESULT => {ok_resp = true}
+               ARG_COUNT  => { remaining = (LittleEndian::read_uint(&resp[current..current+arglen],arglen) & 0xFFFF_FFFF )as u32; }
+                other => {} // For argcs we do not care about
+            }
+           current +=arglen; 
+        }
+        if ok_resp {
+            return Ok(remaining);
+        }
         Err(Error::UnexpectedResponse)
     }
+
+	pub fn do_savetemplate(&mut self , tplid:u8 ) -> Result<u32, Error<E>>  {
+        //                           CMD_Template   aNum
+		let mut transport:Vec<u8> = [0x06, 0x00, 0x0,0x0].to_vec();
+
+        // argument Save 1008
+        transport[2]=transport[2]+1;
+        transport.push(0x08);
+        transport.push(0x10);
+        transport.push(0);
+        transport.push(0);
+
+        transport[2]=transport[2]+1;
+        transport.push(0x06);// ARG ID
+        transport.push(0x00);
+        transport.push(2);  //Len
+        transport.push(0);
+        transport.push(tplid);
+        transport.push(0x0);
+        
+        let cmd = (transport[1],transport[0]);
+        let resp=self.link(transport)?;
+// Parse result args
+        let len = resp.len(); if len <6 {
+             // expect at lease some data here
+             return Err(Error::UnexpectedResponse)
+        }
+        if cmd != (resp[1],resp[0]){
+             // command response did not match command.
+             return Err(Error::UnexpectedResponse)
+        }
+        let argc = as_u16(resp[3],resp[2]);
+        let mut current:usize = 4;
+        // handle all responses here
+        let mut ok_resp = false;
+        for _i in 0..argc{
+            if len < current+4 {
+                // Parse error
+                return Err(Error::UnexpectedResponse)
+            }
+            let arg = as_u16(resp[1+current],resp[current]) ;
+            let arglen = as_u16(resp[3+current],resp[2+current]) as usize ;
+            current +=4;
+            if len < current+arglen {
+                // Parse error
+                return Err(Error::UnexpectedResponse)
+            }
+            match arg {
+               ARG_RESULT => {ok_resp = true}
+               other => {} // For argcs we do not care about
+            }
+           current +=arglen; 
+        }
+        if ok_resp {
+            return Ok(0);
+        }
+        Err(Error::UnexpectedResponse)
+    }
+
+
+	pub fn do_extract(&mut self) -> Result<u32, Error<E>>  {
+        //                           CMD_Enroll   aNum
+		let mut transport:Vec<u8> = [0x05, 0x00,0x01,0x00,0x08,0x00, 0,0].to_vec();
+
+        let cmd = (transport[1],transport[0]);
+        let resp=self.link(transport)?;
+
+        // Parse result args
+        let len = resp.len();
+        if len <6 {
+             // expect at lease some data here
+             return Err(Error::UnexpectedResponse)
+        }
+        if cmd != (resp[1],resp[0]){
+             // command response did not match command.
+             return Err(Error::UnexpectedResponse)
+        }
+        let argc = as_u16(resp[3],resp[2]);
+        let mut current:usize = 4;
+        // handle all responses here
+        let mut remaining:u32 = 0;
+        let mut ok_resp = false;
+        for _i in 0..argc{
+            if len < current+4 {
+                // Parse error
+                return Err(Error::UnexpectedResponse)
+            }
+            let arg = as_u16(resp[1+current],resp[current]) ;
+            let arglen = as_u16(resp[3+current],resp[2+current]) as usize ;
+            current +=4;
+            if len < current+arglen {
+                // Parse error
+                return Err(Error::UnexpectedResponse)
+            }
+            match arg {
+               ARG_RESULT => {ok_resp = true}
+               ARG_COUNT  => { remaining = (LittleEndian::read_uint(&resp[current..current+arglen],arglen) & 0xFFFF_FFFF )as u32; }
+                other => {} // For argcs we do not care about
+            }
+           current +=arglen; 
+        }
+        if ok_resp {
+            return Ok(remaining);
+        }
+        Err(Error::UnexpectedResponse)
+    }
+
+	pub fn identify(&mut self) -> Result<u32, Error<E>>  {
+        self.capture(0)?;
+        self.do_extract()?;
+        self.do_identify()
+    }
+	pub fn do_identify(&mut self) -> Result<u32, Error<E>>  {
+        //                           CMD_identify   aNum
+		let mut transport:Vec<u8> = [0x03, 0x00,0x00, 0x00].to_vec();
+
+        let cmd = (transport[1],transport[0]);
+        let resp=self.link(transport)?;
+
+        // Parse result args
+        let len = resp.len();
+        if len <6 {
+             // expect at lease some data here
+             return Err(Error::UnexpectedResponse)
+        }
+        if cmd != (resp[1],resp[0]){
+             // command response did not match command.
+             return Err(Error::UnexpectedResponse)
+        }
+        let argc = as_u16(resp[3],resp[2]);
+        let mut current:usize = 4;
+         // handle all responses here
+        let mut remaining = 0xFFFF_FFFF;
+        let mut litematch:u32 = 0;
+        let mut ok_resp = false;
+        for _i in 0..argc{
+            if len < current+4 {
+                // Parse error
+                return Err(Error::UnexpectedResponse)
+            }
+            let arg = as_u16(resp[1+current],resp[current]) ;
+            let arglen = as_u16(resp[3+current],resp[2+current]) as usize ;
+            current +=4;
+            if len < current+arglen {
+                // Parse error
+                return Err(Error::UnexpectedResponse)
+            }
+            match arg {
+               ARG_RESULT => {ok_resp = true}
+               ARG_MATCH  => { litematch = (LittleEndian::read_uint(&resp[current..current+arglen],arglen) & 0xFFFF_FFFF )as u32; }
+               ARG_ID  => { remaining = (LittleEndian::read_uint(&resp[current..current+arglen],arglen) & 0xFFFF_FFFF )as u32; }
+                other => {} // For argcs we do not care about
+            }
+           current +=arglen; 
+        }
+        if litematch == 0 {
+            return Err(Error::NoMatch);
+        }
+        if ok_resp && litematch != 0 {
+            return Ok(remaining);
+        }
+        Err(Error::UnexpectedResponse)
+    }
+
+
 
 	pub fn waitfingerup(&mut self, timeout:u32) -> Result<u8, Error<E>>  {
         //                           CMD_wup   aNum
@@ -285,8 +501,8 @@ where  SPI: Transfer<u8, Error = E>,
              // expect at lease some data here
              return Err(Error::UnexpectedResponse)
         }
-        let resp_len = as_u16(resp[3],resp[2]);
-        if resp_len ==1 && as_u16(resp[5],resp[4]) == SensorResp::ARG_Result as u16 {
+        let argc = as_u16(resp[3],resp[2]);
+        if argc ==1 && as_u16(resp[5],resp[4]) == ARG_RESULT {
             return Ok(resp[7])
         }
         Err(Error::UnexpectedResponse)
@@ -307,12 +523,12 @@ where  SPI: Transfer<u8, Error = E>,
              return Err(Error::UnexpectedResponse)
         }
         // expected data len = 1
-        //          Result == ARG_Result
+        //          Result == ARG_RESULT
         // val ==1
-        if as_u16(resp[5],resp[4]) != SensorResp::ARG_Result as u16 {
+        if as_u16(resp[5],resp[4]) != ARG_RESULT {
              return Err(Error::UnexpectedResponse)
         }
-        let resp_len = as_u16(resp[3],resp[2]);
+        let argc = as_u16(resp[3],resp[2]);
 
         Ok(resp[7])
 	}
