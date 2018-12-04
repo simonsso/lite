@@ -85,7 +85,7 @@ where  SPI: Transfer<u8, Error = E>,
 		transport[3]=0x0; // MSB always 0
 		transport[4]=(len & 0xFF) as u8  ;   // Size
 		transport[5]=0x0; // MSB always 0
-    
+
 
         transport.extend(appldata.iter());
 		use crc::*;
@@ -146,7 +146,7 @@ where  SPI: Transfer<u8, Error = E>,
         }
 
         // verify sizes v[0] and v[1] -- ignored
-         
+
         // v[2:3] seq num
         // v[4:5] seq len -- for multi frame package this will be where we have reading of multi data
 
@@ -176,7 +176,7 @@ where  SPI: Transfer<u8, Error = E>,
         }
         // expected data len = 1
         //          Result == ARG_Result
-        // val ==1 
+        // val ==1
         if as_u16(resp[5],resp[4]) != SensorResp::ARG_Result as u16 {
              return Err(Error::UnexpectedResponse)
         }
@@ -212,10 +212,87 @@ where  SPI: Transfer<u8, Error = E>,
             return Ok(resp[7])
         }
         Err(Error::UnexpectedResponse)
-        
+    }
+
+	pub fn enroll(&mut self ) -> Result<u32, Error<E>>  {
+        self.do_enroll(0x03)?; //begin
+        let mut enrolling = true;
+        while (enrolling){
+            self.waitfingerup(0)?;
+            self.capture(0)?;
+            self.do_enroll(0x04)?; //add image
+        }
+        self.do_enroll(0x05)?; //done
+        Ok(0)
+    }
+	pub fn do_enroll(&mut self, state:u32) -> Result<u32, Error<E>>  {
+        //                           CMD_Enroll   aNum
+		let mut transport:Vec<u8> = [0x02, 0x00, 0x0,0x0].to_vec();
+
+        if state != 0 {
+            transport[2]=transport[2]+1;
+            transport.push((0xFF& state )as u8);
+            let state  = state/256;
+            transport.push((0xFF& state )as u8);
+            let state  = state/256;
+            transport.push((0xFF& state )as u8);
+            let state  = state/256;
+            transport.push((0xFF& state )as u8);
+        }
+        let cmd = (transport[1],transport[0]);
+        let resp=self.link(transport)?;
+
+        if resp.len() <6 {
+             // expect at lease some data here
+             return Err(Error::UnexpectedResponse)
+        }
+        let resp_len = as_u16(resp[3],resp[2]);
+        if resp_len ==1 && as_u16(resp[5],resp[4]) == SensorResp::ARG_Result as u16 {
+            return Ok(resp[7].into())
+        }
+        // ToDo handle all responses here
+        Err(Error::UnexpectedResponse)
+    }
+
+	pub fn waitfingerup(&mut self, timeout:u32) -> Result<u8, Error<E>>  {
+        //                           CMD_wup   aNum
+		let mut transport:Vec<u8> = [0x07, 0x00, 0x0,0x0].to_vec();
+        if timeout != 0 {
+            transport[2]=transport[2]+1;
+            transport.push(0x01);
+            transport.push(0x50);    //5001 TimeOut
+            transport.push(0x04);    // Size 4 bytes
+            transport.push(0x00);
+            transport.push((0xFF& timeout )as u8);
+            let timeout  = timeout/256;
+            transport.push((0xFF& timeout )as u8);
+            let timeout  = timeout/256;
+            transport.push((0xFF& timeout )as u8);
+            let timeout  = timeout/256;
+            transport.push((0xFF& timeout )as u8);
+        }
+        let cmd = (transport[1],transport[0]);
+
+        transport[2]=transport[2]+1;
+        transport.push(0x02);
+        transport.push(0x00);    //0002 Enroll
+        transport.push(0x00);    // NilNil
+        transport.push(0x00);
+
+        let resp=self.link(transport)?;
+
+        if resp.len() <6 {
+             // expect at lease some data here
+             return Err(Error::UnexpectedResponse)
+        }
+        let resp_len = as_u16(resp[3],resp[2]);
+        if resp_len ==1 && as_u16(resp[5],resp[4]) == SensorResp::ARG_Result as u16 {
+            return Ok(resp[7])
+        }
+        Err(Error::UnexpectedResponse)
     }
 	pub fn delete_all(&mut self) -> Result<u8, Error<E>>  {
-        //                           TmplStoreage  aNum   Delete    NulNul    ARGALL     NulNul 
+        //                           TmplStoreage  aNum   Delete    NulNul    ARGALL     NulNul
 		let mut transport:Vec<u8> = [0x02, 0x40,0x02,0x00,0x09,0x10,0x00,0x00,0x07,0x00,0x00,0x00].to_vec();
         let cmd = (transport[1],transport[0]);
         let resp=self.link(transport)?;
@@ -231,7 +308,7 @@ where  SPI: Transfer<u8, Error = E>,
         }
         // expected data len = 1
         //          Result == ARG_Result
-        // val ==1 
+        // val ==1
         if as_u16(resp[5],resp[4]) != SensorResp::ARG_Result as u16 {
              return Err(Error::UnexpectedResponse)
         }
@@ -258,7 +335,7 @@ impl new for DummyInterface{
     pub fn new() -> Self {
         DummyInterface
     }
-    
+
 
 }
 impl super::OutputPin for DummyInterface {
@@ -266,7 +343,7 @@ impl super::OutputPin for DummyInterface {
 		
 	}
 	fn set_high(&mut self) {
-	   
+
 	}
 }
 
