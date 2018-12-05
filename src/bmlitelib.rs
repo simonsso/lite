@@ -69,6 +69,11 @@ where  SPI: Transfer<u8, Error = E>,
 
         en
     }
+
+    pub fn teardown(self) -> (SPI, (CS,RST,IRQ)) {
+        // Return interfaces 
+        (self.spi,(self.cs,self.rst,self.irq))
+    }
 	pub fn reset(&mut self) -> Result<u8, Error<E>>  {
         let mut timeout = 300000;
         while timeout > 0{
@@ -518,13 +523,15 @@ where  SPI: Transfer<u8, Error = E>,
              // expect at lease some data here
              return Err(Error::UnexpectedResponse)
         }
+        let argc = as_u16(resp[3],resp[2]);
+
         if cmd != (resp[1],resp[0]){
              // command response did not match command.
              return Err(Error::UnexpectedResponse)
         }
-        // expected data len = 1
-        //          Result == ARG_RESULT
-        // val ==1
+        if argc != 1 {
+             return Err(Error::UnexpectedResponse)
+        }
         if as_u16(resp[5],resp[4]) != ARG_RESULT {
              return Err(Error::UnexpectedResponse)
         }
@@ -543,39 +550,36 @@ fn main() {
 */
 #[cfg(test)]
 mod tests {
+use tests::std::cell::RefCell;
+use core::borrow::BorrowMut;
+
 struct DummyInterface {
-	data:  Vec<bool>,
+	data:  RefCell<Vec<bool>>,
 }
-
-impl new for DummyInterface{
-    pub fn new() -> Self {
-        DummyInterface
-    }
-
-
+impl DummyInterface{
+    fn new(l:Vec<bool>)-> Self{
+        DummyInterface{ data:RefCell::new(l) }
+        }
 }
 impl super::OutputPin for DummyInterface {
 	fn set_low(&mut self ) {
-		
+	    self.data.borrow_mut().push(false)	
 	}
 	fn set_high(&mut self) {
-
+	    self.data.borrow_mut().push(true)	
 	}
 }
 
 impl super::InputPin for DummyInterface {
-	fn is_high(&self ) -> bool {
-		self.data.pop()
+	fn is_high(&self ) -> bool { 
+	    self.data.borrow_mut().pop().unwrap()
 	}
 	fn is_low(&self) -> bool{
 	    ! self.is_high()
-	}
+    }
 }
-
-
 extern crate embedded_hal_mock;
 extern crate std;
-
 use tests::embedded_hal_mock::spi::{Mock as SpiMock, Transaction as SpiTransaction};
 use tests::std::vec::*;
 
@@ -589,26 +593,74 @@ use tests::std::vec::*;
 		//dummy.readdatav.push(vec!(0xff,0x7f,01,0x7f));
         // Configure expectations
 
-		let refvec:Vec<u8> = [0x01,0x00,0x12,0x00,0x0c,0x00,0x01,0x00,0x01,0x00,0x02,0x40,0x02,0x00,0x09,0x10,0x00,0x00,0x07,0x00,0x00,0x00,0xb1,0x2e,0x45,0x93].to_vec();
+		let refvec:Vec<u8>   = [0x01,0x00,0x12,0x00,0x0c,0x00,0x01,0x00,0x01,0x00,0x02,0x40,0x02,0x00,0x09,0x10,0x00,0x00,0x07,0x00,0x00,0x00,0xb1,0x2e,0x45,0x93].to_vec();
+        let dontcare:Vec<u8> = [0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00].to_vec();
+
         let expectations = [
-            SpiTransaction::write([2, 2].to_vec()),
-            SpiTransaction::transfer([3, 4].to_vec(), refvec),
+            SpiTransaction::transfer(refvec,dontcare),
+            SpiTransaction::transfer([0,0,0,0].to_vec(),[0x7f,0xff,0x01,0x7f].to_vec()),
+            SpiTransaction::transfer([0,0,0,0].to_vec(),[0x00,0x00,0x0F,0x00].to_vec()),
+            SpiTransaction::send(0),
+            SpiTransaction::read(0x09),
+            SpiTransaction::send(0),
+            SpiTransaction::read(0x00),
+            SpiTransaction::send(0),
+            SpiTransaction::read(0x01),
+            SpiTransaction::send(0),
+            SpiTransaction::read(0x00),
+            SpiTransaction::send(0),
+            SpiTransaction::read(0x01),
+            SpiTransaction::send(0),
+            SpiTransaction::read(0x00),
+            SpiTransaction::send(0),
+            SpiTransaction::read(0x02),
+            SpiTransaction::send(0),
+            SpiTransaction::read(0x40),
+            SpiTransaction::send(0),
+            SpiTransaction::read(0x01),
+            SpiTransaction::send(0),
+            SpiTransaction::read(0x00),
+            SpiTransaction::send(0),
+            SpiTransaction::read(0x01),
+            SpiTransaction::send(0),
+            SpiTransaction::read(0x20),
+            SpiTransaction::send(0),
+            SpiTransaction::read(0x01),
+            SpiTransaction::send(0),
+            SpiTransaction::read(0x00),
+            SpiTransaction::send(0),
+            SpiTransaction::read(0x00),
+
+            SpiTransaction::send(0),
+            SpiTransaction::read(0xab),
+            SpiTransaction::send(0),
+            SpiTransaction::read(0x1f),
+            SpiTransaction::send(0),
+            SpiTransaction::read(0x35),
+            SpiTransaction::send(0),
+            SpiTransaction::read(0x80),
+
+            //CRC OK
+            SpiTransaction::transfer([0x7f,0xff,0x01,0x7f].to_vec(),[0,0,0,0].to_vec()),
+
+
         ];
 
         let mut spi = SpiMock::new(&expectations);
 
-        let dummy_cs = DummyInterface::new();
-        let dummy_irq = DummyInterface::new();
-        let dummy_reset = DummyInterface::new();
+        let dummy_cs = DummyInterface::new([false,false,false].to_vec());
+        let dummy_irq = DummyInterface::new([false,true,false,true,false,true,false,true,false,true,false,true].to_vec());
+        let dummy_reset = DummyInterface::new([false].to_vec());
 
-		let mut encoder = BmLite{spi, dummy_cs,dummy_reset,dummy_irq };
-		encoder.delete_all();
-		// assert!( tmp[4..]==refvec[4..]);
-		// assert!( &tmp[0..4]==&refvec[0..4]);
+		let mut encoder = BmLite::new(spi, dummy_cs,dummy_reset,dummy_irq );
+		let ans = encoder.delete_all();
+        match ans {
+            Err(x) => {assert!(false, "Function returned unexpected error")}
+            Ok(_) => {}
+        }
 
-		let refvec:Vec<u8> = [0x01,0x00,0x12,0x00,0x0c,0x00,0x01,0x00,0x01,0x00,0x02,0x40,0x02,0x00,0x09,0x10,0x00,0x00,0x07,0x00,0x00,0x00,0xff,0xff,0xff,0xff].to_vec();
-
-        // must implement a teardown first  then call  spi.done();
+        let (mut spi, (_a,_b,_c)) = encoder.teardown();
+        spi.done();
 
 	}
 	/*
