@@ -17,6 +17,7 @@ use alloc::vec::Vec;
 
 extern crate embedded_hal;
 extern crate crc;
+use crc::crc32;
 extern crate byteorder;
 
 #[macro_use(block)]
@@ -27,7 +28,31 @@ use embedded_hal::digital::{InputPin,OutputPin};
 use embedded_hal::blocking::spi::Transfer;
 use embedded_hal::spi::FullDuplex;
 use byteorder::{ByteOrder,LittleEndian};
+trait TransportBuffer<Output>{
+    fn create_transport_buffer() -> Output;
+    fn push_crc(mut self) ->Self;
+}
 
+
+impl TransportBuffer<Vec<u8>> for Vec<u8>
+    {
+    fn create_transport_buffer() -> Vec<u8>{
+        let mut v=Vec::with_capacity(256);
+        v.extend( &[1,0, 0,0, 0x0,0x00, 0x01,0x00,0x01,0]);
+        v
+    }
+    fn push_crc(mut self) -> Self{
+		let crc = crc::crc32::checksum_ieee(&self[4..]);
+		self.push((0xFF& crc )as u8);
+		let crc  = crc/256;
+		self.push((0xFF& crc )as u8);
+		let crc  = crc/256;
+		self.push((0xFF& crc )as u8);
+		let crc  = crc/256;
+		self.push((0xFF& crc )as u8);
+        self
+    }
+}
 pub struct BmLite<SPI,CS,RST,IRQ> {
 	spi: SPI,
 	cs: CS,
@@ -54,6 +79,7 @@ const    ARG_ID:u16 =      0x0006;
 fn as_u16(h:u8,l:u8) -> u16{
     ((h as u16)<<8)|(l as u16)
 }
+
 
 impl <SPI,CS,RST,IRQ, E> BmLite<SPI,CS,RST,IRQ>
 where  SPI: Transfer<u8, Error = E>,
@@ -91,11 +117,11 @@ where  SPI: Transfer<u8, Error = E>,
     }
     fn link(&mut self, appldata:Vec<u8> ) ->  Result<(Vec<u8>), Error<E>> {
         //                           Ch   size size      seqnum     seqlen
-		let mut transport:Vec<u8> = [0,0, 0,0, 0x0,0x00, 0x01,0x00,0x01,0].to_vec();
 		//Add linklayer headers
+
+        let mut transport = <Vec<u8> as TransportBuffer<Vec<u8>>>::create_transport_buffer();
+
         let len = appldata.len() as u32;
-		transport[0]=0x1;   //Chanel
-		transport[1]=0x0;
 		transport[2]=(len & 0xFF) as u8 +6 ; // Size
 		transport[3]=0x0; // MSB always 0
 		transport[4]=(len & 0xFF) as u8  ;   // Size
@@ -103,15 +129,8 @@ where  SPI: Transfer<u8, Error = E>,
 
 
         transport.extend(appldata.iter());
-		use crc::*;
-		let crc = crc32::checksum_ieee(&transport[4..]);
-		transport.push((0xFF& crc )as u8);
-		let crc  = crc/256;
-		transport.push((0xFF& crc )as u8);
-		let crc  = crc/256;
-		transport.push((0xFF& crc )as u8);
-		let crc  = crc/256;
-		transport.push((0xFF& crc )as u8);
+        transport = transport.push_crc();
+
 
         self.cs.set_low();
         let _ans = self.spi.transfer( &mut transport).map_err(Error::HalErr)?;
