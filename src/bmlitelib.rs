@@ -31,6 +31,14 @@ use byteorder::{ByteOrder,LittleEndian};
 trait TransportBuffer<Output>{
     fn create_transport_buffer() -> Output;
     fn push_crc(mut self) ->Self;
+    fn set_cmd(mut self,u16) ->Self;
+    fn get_cmd(&self) -> Option<u16>;
+    fn push_u16(mut self,u16) ->Self;
+    fn push_u32(mut self,u32) ->Self;
+    fn add_arg(mut self,u16) ->Self;
+    fn add_arg_u8(mut self,u16,u8) ->Self;
+    fn add_arg_u16(mut self,u16,u16) ->Self;
+    fn add_arg_u32(mut self,u16,u32) ->Self;
 }
 
 
@@ -41,16 +49,58 @@ impl TransportBuffer<Vec<u8>> for Vec<u8>
         v.extend( &[1,0, 0,0, 0x0,0x00, 0x01,0x00,0x01,0]);
         v
     }
+    fn get_cmd(&self) -> Option<u16> {
+        if self.len()>=12{
+            let resp =  (LittleEndian::read_uint(&self[11..12],2) & 0xFFFF )as u16;
+            return Some(resp)
+        }
+        None
+    }
+    fn set_cmd(mut self,cmd:u16) ->Self{
+        if self.len()!=10{
+            assert!(false,"unexpected command added");
+            //self.push or correct code
+        }
+        self.push_u16(cmd).push_u16(0)
+    }
     fn push_crc(mut self) -> Self{
-		let crc = crc::crc32::checksum_ieee(&self[4..]);
-		self.push((0xFF& crc )as u8);
-		let crc  = crc/256;
-		self.push((0xFF& crc )as u8);
-		let crc  = crc/256;
-		self.push((0xFF& crc )as u8);
-		let crc  = crc/256;
-		self.push((0xFF& crc )as u8);
+        let crc = crc::crc32::checksum_ieee(&self[4..]);
+		self.push_u32(crc)
+    }
+
+    fn push_u16(mut self,data:u16) ->Self{
+		self.push((0xFF& data )as u8);
+        let data = data /256;
+		self.push((0xFF& data )as u8);
         self
+    }
+    fn push_u32(mut self,data:u32) -> Self{
+		self.push((0xFF& data )as u8);
+		let data  = data/256;
+		self.push((0xFF& data )as u8);
+		let data  = data/256;
+		self.push((0xFF& data )as u8);
+		let data  = data/256;
+		self.push((0xFF& data )as u8);
+        self
+    }
+    fn add_arg(mut self,arg:u16) ->Self{
+        self[12] +=1 ;
+		self.push_u16(arg).push_u16(0)
+    }
+    fn add_arg_u8(mut self,arg:u16,data:u8) ->Self{
+        self[12] +=1 ;
+		let mut s = self.push_u16(arg).push_u16(2);
+        s.push(data);
+        s
+    }
+    fn add_arg_u16(mut self,arg:u16,data:u16) ->Self{
+        self[12] +=1 ;
+		self.push_u16(arg).push_u16(2).push_u16(data)
+    }
+    fn add_arg_u32(mut self,arg:u16,data:u32) -> Self{
+        self[12] +=1 ;
+		self.push_u16(arg).push_u16(4).push_u32(data)
     }
 }
 pub struct BmLite<SPI,CS,RST,IRQ> {
@@ -58,7 +108,7 @@ pub struct BmLite<SPI,CS,RST,IRQ> {
 	cs: CS,
     rst: RST,
     irq: IRQ,
-    enrolledfingers: u8,
+    enrolledfingers: u16,
 }
 
 pub enum Error<E>{
@@ -115,22 +165,14 @@ where  SPI: Transfer<u8, Error = E>,
         //ToDoReset internal data strutures when they exist
         Ok(0)
     }
-    fn link(&mut self, appldata:Vec<u8> ) ->  Result<(Vec<u8>), Error<E>> {
-        //                           Ch   size size      seqnum     seqlen
-		//Add linklayer headers
-
-        let mut transport = <Vec<u8> as TransportBuffer<Vec<u8>>>::create_transport_buffer();
-
-        let len = appldata.len() as u32;
+    fn link(&mut self, mut transport:Vec<u8> ) ->  Result<(Vec<u8>), Error<E>> {
+        let len = transport.len() as u32 -10 ;
 		transport[2]=(len & 0xFF) as u8 +6 ; // Size
 		transport[3]=0x0; // MSB always 0
 		transport[4]=(len & 0xFF) as u8  ;   // Size
 		transport[5]=0x0; // MSB always 0
 
-
-        transport.extend(appldata.iter());
         transport = transport.push_crc();
-
 
         self.cs.set_low();
         let _ans = self.spi.transfer( &mut transport).map_err(Error::HalErr)?;
@@ -204,9 +246,8 @@ where  SPI: Transfer<u8, Error = E>,
         Ok(v.split_off(6))
     }
 	pub fn get_version(&mut self) -> Result<u8, Error<E>>  {
-        //                           CMD_INFO   Size      GET1004  , NulNul
-		let mut transport:Vec<u8> = [0x04, 0x30,0x01,0x00,0x04,0x10, 0,0].to_vec();
-        let cmd = (transport[1],transport[0]);
+        let cmd = 0x3004;
+        let mut transport = <Vec<u8> as TransportBuffer<Vec<u8>>>::create_transport_buffer().set_cmd(cmd).add_arg(0x1004);
         let resp=self.link(transport)?;
 
 
@@ -214,7 +255,7 @@ where  SPI: Transfer<u8, Error = E>,
              // expect at lease some data here
              return Err(Error::UnexpectedResponse)
         }
-        if cmd != (resp[1],resp[0]){
+        if cmd != as_u16(resp[1],resp[0]){
              // command response did not match command.
              return Err(Error::UnexpectedResponse)
         }
@@ -228,23 +269,11 @@ where  SPI: Transfer<u8, Error = E>,
     }
     // Timeout in ms but 0 waits forever
 	pub fn capture(&mut self, timeout:u32) -> Result<u8, Error<E>>  {
-        //                           CMD_Capure   aNum
-		let mut transport:Vec<u8> = [0x01, 0x00, 0x0,0x0].to_vec();
+        let cmd = 0x0001;
+        let mut transport = <Vec<u8> as TransportBuffer<Vec<u8>>>::create_transport_buffer().set_cmd(cmd);
         if timeout != 0 {
-            transport[2]=1;
-            transport.push(0x01);
-            transport.push(0x50);    //5001 TimeOut
-            transport.push(0x04);    // Size 4 bytes
-            transport.push(0x00);
-            transport.push((0xFF& timeout )as u8);
-            let timeout  = timeout/256;
-            transport.push((0xFF& timeout )as u8);
-            let timeout  = timeout/256;
-            transport.push((0xFF& timeout )as u8);
-            let timeout  = timeout/256;
-            transport.push((0xFF& timeout )as u8);
+            transport = transport.add_arg_u32(0x5001, timeout );
         }
-        let cmd = (transport[1],transport[0]);
         let resp=self.link(transport)?;
 
         if resp.len() <6 {
@@ -272,21 +301,12 @@ where  SPI: Transfer<u8, Error = E>,
         self.enrolledfingers += 1;
         Ok(0)
     }
-	pub fn do_enroll(&mut self, state:u32) -> Result<u32, Error<E>>  {
-        //                           CMD_Enroll   aNum
-		let mut transport:Vec<u8> = [0x02, 0x00, 0x0,0x0].to_vec();
-
+	pub fn do_enroll(&mut self, state:u16) -> Result<u32, Error<E>>  {
+        let cmd = 0x0002;
+        let mut transport = <Vec<u8> as TransportBuffer<Vec<u8>>>::create_transport_buffer().set_cmd(cmd);
         if state != 0 {
-            transport[2]=transport[2]+1;
-            transport.push((0xFF& state )as u8);
-            let state  = state/256;
-            transport.push((0xFF& state )as u8);
-            let state  = state/256;
-            transport.push((0xFF& state )as u8);
-            let state  = state/256;
-            transport.push((0xFF& state )as u8);
+            transport=transport.add_arg(state);
         }
-        let cmd = (transport[1],transport[0]);
         let resp=self.link(transport)?;
 
         // Parse result args
@@ -295,7 +315,7 @@ where  SPI: Transfer<u8, Error = E>,
              // expect at lease some data here
              return Err(Error::UnexpectedResponse)
         }
-        if cmd != (resp[1],resp[0]){
+        if cmd != as_u16(resp[1],resp[0]){
              // command response did not match command.
              return Err(Error::UnexpectedResponse)
         }
@@ -329,33 +349,16 @@ where  SPI: Transfer<u8, Error = E>,
         Err(Error::UnexpectedResponse)
     }
 
-	pub fn do_savetemplate(&mut self , tplid:u8 ) -> Result<u32, Error<E>>  {
-        //                           CMD_Template   aNum
-		let mut transport:Vec<u8> = [0x06, 0x00, 0x0,0x0].to_vec();
-
-        // argument Save 1008
-        transport[2]=transport[2]+1;
-        transport.push(0x08);
-        transport.push(0x10);
-        transport.push(0);
-        transport.push(0);
-
-        transport[2]=transport[2]+1;
-        transport.push(0x06);// ARG ID
-        transport.push(0x00);
-        transport.push(2);  //Len
-        transport.push(0);
-        transport.push(tplid);
-        transport.push(0x0);
-        
-        let cmd = (transport[1],transport[0]);
+	pub fn do_savetemplate(&mut self , tplid:u16 ) -> Result<u32, Error<E>>  {
+        let cmd = 0x0006;
+        let mut transport = <Vec<u8> as TransportBuffer<Vec<u8>>>::create_transport_buffer().set_cmd(cmd).add_arg(0x1008).add_arg_u16(0x0006,tplid);
         let resp=self.link(transport)?;
 // Parse result args
         let len = resp.len(); if len <6 {
              // expect at lease some data here
              return Err(Error::UnexpectedResponse)
         }
-        if cmd != (resp[1],resp[0]){
+        if cmd != as_u16(resp[1],resp[0]){
              // command response did not match command.
              return Err(Error::UnexpectedResponse)
         }
@@ -389,10 +392,8 @@ where  SPI: Transfer<u8, Error = E>,
 
 
 	pub fn do_extract(&mut self) -> Result<u32, Error<E>>  {
-        //                           CMD_Enroll   aNum
-		let mut transport:Vec<u8> = [0x05, 0x00,0x01,0x00,0x08,0x00, 0,0].to_vec();
-
-        let cmd = (transport[1],transport[0]);
+        let cmd = 0x0005;
+        let mut transport = <Vec<u8> as TransportBuffer<Vec<u8>>>::create_transport_buffer().set_cmd(cmd).add_arg(0x0008);
         let resp=self.link(transport)?;
 
         // Parse result args
@@ -401,7 +402,7 @@ where  SPI: Transfer<u8, Error = E>,
              // expect at lease some data here
              return Err(Error::UnexpectedResponse)
         }
-        if cmd != (resp[1],resp[0]){
+        if cmd != as_u16(resp[1],resp[0]){
              // command response did not match command.
              return Err(Error::UnexpectedResponse)
         }
@@ -441,10 +442,9 @@ where  SPI: Transfer<u8, Error = E>,
         self.do_identify()
     }
 	pub fn do_identify(&mut self) -> Result<u32, Error<E>>  {
-        //                           CMD_identify   aNum
-		let mut transport:Vec<u8> = [0x03, 0x00,0x00, 0x00].to_vec();
+        let cmd = 0x0003;
+        let mut transport = <Vec<u8> as TransportBuffer<Vec<u8>>>::create_transport_buffer().set_cmd(cmd);
 
-        let cmd = (transport[1],transport[0]);
         let resp=self.link(transport)?;
 
         // Parse result args
@@ -453,7 +453,7 @@ where  SPI: Transfer<u8, Error = E>,
              // expect at lease some data here
              return Err(Error::UnexpectedResponse)
         }
-        if cmd != (resp[1],resp[0]){
+        if cmd != as_u16(resp[1],resp[0]){
              // command response did not match command.
              return Err(Error::UnexpectedResponse)
         }
@@ -495,29 +495,12 @@ where  SPI: Transfer<u8, Error = E>,
 
 
 	pub fn waitfingerup(&mut self, timeout:u32) -> Result<u8, Error<E>>  {
-        //                           CMD_wup   aNum
-		let mut transport:Vec<u8> = [0x07, 0x00, 0x0,0x0].to_vec();
+        let cmd = 0x007;
+        let mut transport = <Vec<u8> as TransportBuffer<Vec<u8>>>::create_transport_buffer().set_cmd(cmd);
         if timeout != 0 {
-            transport[2]=transport[2]+1;
-            transport.push(0x01);
-            transport.push(0x50);    //5001 TimeOut
-            transport.push(0x04);    // Size 4 bytes
-            transport.push(0x00);
-            transport.push((0xFF& timeout )as u8);
-            let timeout  = timeout/256;
-            transport.push((0xFF& timeout )as u8);
-            let timeout  = timeout/256;
-            transport.push((0xFF& timeout )as u8);
-            let timeout  = timeout/256;
-            transport.push((0xFF& timeout )as u8);
+            transport=transport.add_arg_u32(0x5001,timeout);
         }
-        let cmd = (transport[1],transport[0]);
-
-        transport[2]=transport[2]+1;
-        transport.push(0x02);
-        transport.push(0x00);    //0002 Enroll
-        transport.push(0x00);    // NilNil
-        transport.push(0x00);
+        transport = transport.add_arg(0x0002); //0002 Enroll
 
         let resp=self.link(transport)?;
 
@@ -532,9 +515,8 @@ where  SPI: Transfer<u8, Error = E>,
         Err(Error::UnexpectedResponse)
     }
 	pub fn delete_all(&mut self) -> Result<u8, Error<E>>  {
-        //                           TmplStoreage  aNum   Delete    NulNul    ARGALL     NulNul
-		let mut transport:Vec<u8> = [0x02, 0x40,0x02,0x00,0x09,0x10,0x00,0x00,0x07,0x00,0x00,0x00].to_vec();
-        let cmd = (transport[1],transport[0]);
+        let cmd = 0x4002;
+        let mut transport = <Vec<u8> as TransportBuffer<Vec<u8>>>::create_transport_buffer().set_cmd(cmd).add_arg(0x1009).add_arg(0x0007);
         let resp=self.link(transport)?;
 
 
@@ -544,7 +526,7 @@ where  SPI: Transfer<u8, Error = E>,
         }
         let argc = as_u16(resp[3],resp[2]);
 
-        if cmd != (resp[1],resp[0]){
+        if cmd != as_u16(resp[1],resp[0]){
              // command response did not match command.
              return Err(Error::UnexpectedResponse)
         }
