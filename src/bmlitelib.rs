@@ -151,6 +151,13 @@ where  SPI: Transfer<u8, Error = E>,
         (self.spi,(self.cs,self.rst,self.irq))
     }
 	pub fn reset(&mut self) -> Result<u8, Error<E>>  {
+        // let mut v= [0,0];
+        // let _ans=block!(self.spi.send(0x1c)).map_err(Error::HalErr)?;
+        // v[0] = block!(self.spi.read()).map_err(Error::HalErr)?;
+        // let _ans=block!(self.spi.send(0)).map_err(Error::HalErr)?;
+        // v[0] = block!(self.spi.read()).map_err(Error::HalErr)?;
+        
+       
         let mut timeout = 300000;
         while timeout > 0{
             self.rst.set_low();
@@ -162,7 +169,6 @@ where  SPI: Transfer<u8, Error = E>,
             self.rst.set_high();
             timeout -= 1;
         }
-        //ToDoReset internal data strutures when they exist
         Ok(0)
     }
     fn link(&mut self, mut transport:Vec<u8> ) ->  Result<(Vec<u8>), Error<E>> {
@@ -186,7 +192,7 @@ where  SPI: Transfer<u8, Error = E>,
             }
         }
         self.cs.set_low();
-        let mut ack:Vec<u8> = [0,0,0,0].to_vec();
+        let mut ack:[u8;4] = [0,0,0,0];
         let ack = self.spi.transfer(&mut ack).map_err(Error::HalErr)?;
         self.cs.set_high();
 
@@ -202,7 +208,7 @@ where  SPI: Transfer<u8, Error = E>,
          //   }
         }
         self.cs.set_low();
-        let mut v0:Vec<u8> = [0,0,0,0].to_vec();
+        let mut v0:[u8;4] = [0,0,0,0];
         let v0 = self.spi.transfer(&mut v0).map_err(Error::HalErr)?;
         self.cs.set_high();
         // v is now chanel and size
@@ -211,7 +217,7 @@ where  SPI: Transfer<u8, Error = E>,
         //
         // }
         let transportsize:usize = 4 + v0[2] as usize;
-        let mut v:Vec<u8> = Vec::with_capacity(transportsize);
+        let mut v:Vec<u8> = Vec::with_capacity(256);
         self.cs.set_low();
         for _i in 0..transportsize {
            let _ans=block!(self.spi.send(0)).map_err(Error::HalErr)?;
