@@ -299,7 +299,10 @@ where  SPI: Transfer<u8, Error = E>,
         }
         let argc = as_u16(resp[3],resp[2]);
         if argc ==1 && as_u16(resp[5],resp[4]) == ARG_RESULT {
-            return Ok(resp[7])
+            if 1 == as_u16(resp[7],resp[6]) {
+            // Expected result one byte
+                return Ok(resp[8])
+            }
         }
         Err(Error::UnexpectedResponse)
     }
