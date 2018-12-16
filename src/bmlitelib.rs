@@ -886,4 +886,71 @@ SpiTransaction::transfer([0x7f,0xff,0x01,0x7f].to_vec(),[0,0,0,0].to_vec()),
         spi.done();
 
 	}
+    #[test]
+    fn capture_image() {
+		use super::*;
+        let expectations = [
+                SpiTransaction::transfer([0x01,0x00,0x0a,0x00,0x04,0x00,0x01,0x00,0x01,0x00,0x01,0x00,0x00,0x00,0x52,0x7c,0x2b,0x55,].to_vec(),[0;18].to_vec()),
+                SpiTransaction::transfer([0,0,0,0].to_vec(),[0x7f,0xff,0x01,0x7f].to_vec()),
+                SpiTransaction::transfer([0,0,0,0].to_vec() ,[0,0,17-2,0].to_vec()),
+                SpiTransaction::send(0x00),
+                SpiTransaction::read(0x09),
+                SpiTransaction::send(0x00),
+                SpiTransaction::read(0x00),
+                SpiTransaction::send(0x00),
+                SpiTransaction::read(0x01),
+                SpiTransaction::send(0x00),
+                SpiTransaction::read(0x00),
+                SpiTransaction::send(0x00),
+                SpiTransaction::read(0x01),
+                SpiTransaction::send(0x00),
+                SpiTransaction::read(0x00),
+                SpiTransaction::send(0x00),
+                SpiTransaction::read(0x01),
+                SpiTransaction::send(0x00),
+                SpiTransaction::read(0x00),
+                SpiTransaction::send(0x00),
+                SpiTransaction::read(0x01),
+                SpiTransaction::send(0x00),
+                SpiTransaction::read(0x00),
+                SpiTransaction::send(0x00),
+                SpiTransaction::read(0x01),
+                SpiTransaction::send(0x00),
+                SpiTransaction::read(0x20),
+                SpiTransaction::send(0x00),
+                SpiTransaction::read(0x01),
+                SpiTransaction::send(0x00),
+                SpiTransaction::read(0x00),
+                SpiTransaction::send(0x00),
+                SpiTransaction::read(0x00),
+                // CRC 2418401667 9025e183 over 15 bytes
+
+                SpiTransaction::send(0x00),
+                SpiTransaction::read(0x83),
+                SpiTransaction::send(0x00),
+                SpiTransaction::read(0xe1),
+                SpiTransaction::send(0x00),
+                SpiTransaction::read(0x25),
+                SpiTransaction::send(0x00),
+                SpiTransaction::read(0x90),
+                SpiTransaction::transfer([0x7f,0xff,0x01,0x7f].to_vec(),[0,0,0,0].to_vec()),
+        ];
+
+        let mut spi = SpiMock::new(&expectations);
+
+        let dummy_cs = DummyInterface::new([false,false,false].to_vec());
+        let dummy_irq = DummyInterface::new([false,true,false,true,false,true,false,true,false,true,false,true,false,true,false,true,false,true,false,true,false,true,false,true].to_vec());
+        let dummy_reset = DummyInterface::new([false].to_vec());
+
+		let mut encoder = BmLite::new(spi, dummy_cs,dummy_reset,dummy_irq );
+		let ans = encoder.capture(0);
+        match ans {
+            Err(x) => {assert!(false, "Function returned unexpected error")}
+            Ok(ans) => {assert!(ans == 0) }
+        }
+
+        let (mut spi, (_a,_b,_c)) = encoder.teardown();
+        spi.done();
+
+	}
 }
