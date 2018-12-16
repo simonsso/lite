@@ -14,6 +14,7 @@
 
 extern crate alloc;
 use alloc::vec::Vec;
+use core::sync::atomic::{compiler_fence, Ordering::AcqRel};
 
 extern crate embedded_hal;
 extern crate crc;
@@ -46,6 +47,7 @@ impl TransportBuffer<Vec<u8>> for Vec<u8>
     {
     fn create_transport_buffer() -> Vec<u8>{
         let mut v=Vec::with_capacity(256);
+        compiler_fence(AcqRel);
         v.extend( &[1,0, 0,0, 0x0,0x00, 0x01,0x00,0x01,0]);
         v
     }
@@ -150,14 +152,17 @@ where  SPI: Transfer<u8, Error = E>,
         // Return interfaces 
         (self.spi,(self.cs,self.rst,self.irq))
     }
-	pub fn reset(&mut self) -> Result<u8, Error<E>>  {
-        // let mut v= [0,0];
-        // let _ans=block!(self.spi.send(0x1c)).map_err(Error::HalErr)?;
-        // v[0] = block!(self.spi.read()).map_err(Error::HalErr)?;
-        // let _ans=block!(self.spi.send(0)).map_err(Error::HalErr)?;
-        // v[0] = block!(self.spi.read()).map_err(Error::HalErr)?;
+	pub fn reset_start(&mut self) -> Result<u8, Error<E>>  {
+        self.rst.set_low();
+        Ok(0)
+    }
         
-       
+    pub fn reset_end(&mut self) -> Result<u8, Error<E>>  {
+        self.rst.set_high();
+        Ok(0)
+    }
+
+	pub fn reset(&mut self) -> Result<u8, Error<E>>  {
         let mut timeout = 300000;
         while timeout > 0{
             self.rst.set_low();
@@ -215,19 +220,25 @@ where  SPI: Transfer<u8, Error = E>,
         // if ! (v0[0] == 0 && v0[1] == 0xf && v0[2] == 0x01 && v0[3] == 0x7f ) {
         //     return Err(Error::UnexpectedResponse)
         //
-        // }
+        // }        
+
         let transportsize:usize = 4 + v0[2] as usize;
-        let mut v:Vec<u8> = Vec::with_capacity(256);
+        //        let mut v:Vec<u8> = Vec::with_capacity(transportsize);
+        //        let mut responsevector:Vec<u8> = Vec::with_capacity( 100);
+
+        let mut responsevector:Vec<u8> = Vec::with_capacity(transportsize);
+        compiler_fence(AcqRel);
+
         self.cs.set_low();
         for _i in 0..transportsize {
            let _ans=block!(self.spi.send(0)).map_err(Error::HalErr)?;
            let ans:u8 = block!(self.spi.read()).map_err(Error::HalErr)?;
-           v.push(ans);
+           responsevector.push(ans);
         }
         self.cs.set_high();
-		let crc = crc32::checksum_ieee(&v[0..transportsize-4]);
+		let crc = crc32::checksum_ieee(&responsevector[0..transportsize-4]);
 
-        if crc == LittleEndian::read_u32(&v[transportsize-4..transportsize]){
+        if crc == LittleEndian::read_u32(&responsevector[transportsize-4..transportsize]){
             self.cs.set_low();
             let mut ack = [0x7f,0xff,0x01,0x7f];
             let mut ack = self.spi.transfer(&mut ack).map_err(Error::HalErr)?;
@@ -242,14 +253,14 @@ where  SPI: Transfer<u8, Error = E>,
         // v[2:3] seq num
         // v[4:5] seq len -- for multi frame package this will be where we have reading of multi data
 
-        if (v[2],v[3]) != (v[4],v[5]) {
+        if (responsevector[2],responsevector[3]) != (responsevector[4],responsevector[5]) {
              // multi packet not expected and supported yet
              return Err(Error::UnexpectedResponse)
         }
 
         // v[6:7] application package:  (maybe num commands)
         // v[8:9] CMD should be same as CMD sent.
-        Ok(v.split_off(6))
+        Ok(responsevector.split_off(6))
     }
 	pub fn get_version(&mut self) -> Result<u8, Error<E>>  {
         let cmd = 0x3004;
