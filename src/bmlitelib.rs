@@ -150,21 +150,18 @@ where  SPI: Transfer<u8, Error = E>,
         // Return interfaces 
         (self.spi,(self.cs,self.rst,self.irq))
     }
-	pub fn reset(&mut self) -> Result<u8, Error<E>>  {
-        let mut timeout = 300000;
-        while timeout > 0{
-            self.rst.set_low();
-            timeout -= 1;
-        }
-        //ToDo add a delay here.
-        timeout = 400000;
-        while timeout > 0{
-            self.rst.set_high();
-            timeout -= 1;
-        }
-        //ToDoReset internal data strutures when they exist
+
+
+	pub fn reset<DelayClass>(&mut self,mut d: DelayClass) -> Result<u8, Error<E>> 
+        where DelayClass: FnMut()
+    {
+ 
+        self.rst.set_low();
+        d();
+        self.rst.set_high();
         Ok(0)
     }
+
     fn link(&mut self, mut transport:Vec<u8> ) ->  Result<(Vec<u8>), Error<E>> {
         let len = transport.len() as u32 -10 ;
 		transport[2]=(len & 0xFF) as u8 +6 ; // Size
@@ -205,11 +202,7 @@ where  SPI: Transfer<u8, Error = E>,
         let mut v0:Vec<u8> = [0,0,0,0].to_vec();
         let v0 = self.spi.transfer(&mut v0).map_err(Error::HalErr)?;
         self.cs.set_high();
-        // v is now chanel and size
-        // if ! (v0[0] == 0 && v0[1] == 0xf && v0[2] == 0x01 && v0[3] == 0x7f ) {
-        //     return Err(Error::UnexpectedResponse)
-        //
-        // }
+
         let transportsize:usize = 4 + v0[2] as usize;
         let mut v:Vec<u8> = Vec::with_capacity(transportsize);
         self.cs.set_low();
@@ -282,15 +275,21 @@ where  SPI: Transfer<u8, Error = E>,
         }
         let argc = as_u16(resp[3],resp[2]);
         if argc ==1 && as_u16(resp[5],resp[4]) == ARG_RESULT {
-            return Ok(resp[7])
+            if 1 == as_u16(resp[7],resp[6]) {
+            // Expected result one byte
+                return Ok(resp[8])
+            }
         }
         Err(Error::UnexpectedResponse)
     }
-
-	pub fn enroll(&mut self ) -> Result<u32, Error<E>>  {
-        self.do_enroll(0x03)?; //begin
+	pub fn enroll<F>(&mut self, mut f:F ) -> Result<u32, Error<E>>
+        where F:FnMut(u32)
+    {
         let mut enrolling = 100;
+        f(enrolling as u32);
+        self.do_enroll(0x03)?; //begin
         while enrolling > 0{
+            f(enrolling as u32);
             self.waitfingerup(0)?;
             self.capture(0)?;
             enrolling = self.do_enroll(0x04)?; //add image
@@ -301,6 +300,7 @@ where  SPI: Transfer<u8, Error = E>,
         self.enrolledfingers += 1;
         Ok(0)
     }
+
 	pub fn do_enroll(&mut self, state:u16) -> Result<u32, Error<E>>  {
         let cmd = 0x0002;
         let mut transport = <Vec<u8> as TransportBuffer<Vec<u8>>>::create_transport_buffer().set_cmd(cmd);
@@ -587,160 +587,160 @@ use tests::std::vec::*;
 	fn capture_identify() {
 		use super::*;
         let expectations = [
-   SpiTransaction::transfer([0x01,0x00,0x0a,0x00,0x04,0x00,0x01,0x00,0x01,0x00,0x01,0x00,0x00,0x00,0x52,0x7c,0x2b,0x55,].to_vec(),[0;18].to_vec()),
-SpiTransaction::transfer([0,0,0,0].to_vec(),[0x7f,0xff,0x01,0x7f].to_vec()),
-SpiTransaction::transfer([0,0,0,0].to_vec() ,[0,0,17-2,0].to_vec()),
-SpiTransaction::send(0x00),
-SpiTransaction::read(0x09),
-SpiTransaction::send(0x00),
-SpiTransaction::read(0x00),
-SpiTransaction::send(0x00),
-SpiTransaction::read(0x01),
-SpiTransaction::send(0x00),
-SpiTransaction::read(0x00),
-SpiTransaction::send(0x00),
-SpiTransaction::read(0x01),
-SpiTransaction::send(0x00),
-SpiTransaction::read(0x00),
-SpiTransaction::send(0x00),
-SpiTransaction::read(0x01),
-SpiTransaction::send(0x00),
-SpiTransaction::read(0x00),
-SpiTransaction::send(0x00),
-SpiTransaction::read(0x01),
-SpiTransaction::send(0x00),
-SpiTransaction::read(0x00),
-SpiTransaction::send(0x00),
-SpiTransaction::read(0x01),
-SpiTransaction::send(0x00),
-SpiTransaction::read(0x20),
-SpiTransaction::send(0x00),
-SpiTransaction::read(0x01),
-SpiTransaction::send(0x00),
-SpiTransaction::read(0x00),
-SpiTransaction::send(0x00),
-SpiTransaction::read(0x00),
-// CRC 2418401667 9025e183 over 15 bytes
+            SpiTransaction::transfer([0x01,0x00,0x0a,0x00,0x04,0x00,0x01,0x00,0x01,0x00,0x01,0x00,0x00,0x00,0x52,0x7c,0x2b,0x55,].to_vec(),[0;18].to_vec()),
+            SpiTransaction::transfer([0,0,0,0].to_vec(),[0x7f,0xff,0x01,0x7f].to_vec()),
+            SpiTransaction::transfer([0,0,0,0].to_vec() ,[0,0,17-2,0].to_vec()),
+            SpiTransaction::send(0x00),
+            SpiTransaction::read(0x09),
+            SpiTransaction::send(0x00),
+            SpiTransaction::read(0x00),
+            SpiTransaction::send(0x00),
+            SpiTransaction::read(0x01),
+            SpiTransaction::send(0x00),
+            SpiTransaction::read(0x00),
+            SpiTransaction::send(0x00),
+            SpiTransaction::read(0x01),
+            SpiTransaction::send(0x00),
+            SpiTransaction::read(0x00),
+            SpiTransaction::send(0x00),
+            SpiTransaction::read(0x01),
+            SpiTransaction::send(0x00),
+            SpiTransaction::read(0x00),
+            SpiTransaction::send(0x00),
+            SpiTransaction::read(0x01),
+            SpiTransaction::send(0x00),
+            SpiTransaction::read(0x00),
+            SpiTransaction::send(0x00),
+            SpiTransaction::read(0x01),
+            SpiTransaction::send(0x00),
+            SpiTransaction::read(0x20),
+            SpiTransaction::send(0x00),
+            SpiTransaction::read(0x01),
+            SpiTransaction::send(0x00),
+            SpiTransaction::read(0x00),
+            SpiTransaction::send(0x00),
+            SpiTransaction::read(0x00),
+            // CRC 2418401667 9025e183 over 15 bytes
 
-SpiTransaction::send(0x00),
-SpiTransaction::read(0x83),
-SpiTransaction::send(0x00),
-SpiTransaction::read(0xe1),
-SpiTransaction::send(0x00),
-SpiTransaction::read(0x25),
-SpiTransaction::send(0x00),
-SpiTransaction::read(0x90),
-SpiTransaction::transfer([0x7f,0xff,0x01,0x7f].to_vec(),[0,0,0,0].to_vec()),
-SpiTransaction::transfer([0x01,0x00,0x0e,0x00,0x08,0x00,0x01,0x00,0x01,0x00,0x05,0x00,0x01,0x00,0x08,0x00,0x00,0x00,0x8e,0xb5,0x8d,0xd0,].to_vec(),[0;22].to_vec()),
-SpiTransaction::transfer([0,0,0,0].to_vec(),[0x7f,0xff,0x01,0x7f].to_vec()),
-SpiTransaction::transfer([0,0,0,0].to_vec() ,[0,0,17-2,0].to_vec()),
-SpiTransaction::send(0x00),
-SpiTransaction::read(0x09),
-SpiTransaction::send(0x00),
-SpiTransaction::read(0x00),
-SpiTransaction::send(0x00),
-SpiTransaction::read(0x01),
-SpiTransaction::send(0x00),
-SpiTransaction::read(0x00),
-SpiTransaction::send(0x00),
-SpiTransaction::read(0x01),
-SpiTransaction::send(0x00),
-SpiTransaction::read(0x00),
-SpiTransaction::send(0x00),
-SpiTransaction::read(0x05),
-SpiTransaction::send(0x00),
-SpiTransaction::read(0x00),
-SpiTransaction::send(0x00),
-SpiTransaction::read(0x01),
-SpiTransaction::send(0x00),
-SpiTransaction::read(0x00),
-SpiTransaction::send(0x00),
-SpiTransaction::read(0x01),
-SpiTransaction::send(0x00),
-SpiTransaction::read(0x20),
-SpiTransaction::send(0x00),
-SpiTransaction::read(0x01),
-SpiTransaction::send(0x00),
-SpiTransaction::read(0x00),
-SpiTransaction::send(0x00),
-SpiTransaction::read(0x00),
-// CRC 3452547215 cdc9b08f over 15 bytes
+            SpiTransaction::send(0x00),
+            SpiTransaction::read(0x83),
+            SpiTransaction::send(0x00),
+            SpiTransaction::read(0xe1),
+            SpiTransaction::send(0x00),
+            SpiTransaction::read(0x25),
+            SpiTransaction::send(0x00),
+            SpiTransaction::read(0x90),
+            SpiTransaction::transfer([0x7f,0xff,0x01,0x7f].to_vec(),[0,0,0,0].to_vec()),
+            SpiTransaction::transfer([0x01,0x00,0x0e,0x00,0x08,0x00,0x01,0x00,0x01,0x00,0x05,0x00,0x01,0x00,0x08,0x00,0x00,0x00,0x8e,0xb5,0x8d,0xd0,].to_vec(),[0;22].to_vec()),
+            SpiTransaction::transfer([0,0,0,0].to_vec(),[0x7f,0xff,0x01,0x7f].to_vec()),
+            SpiTransaction::transfer([0,0,0,0].to_vec() ,[0,0,17-2,0].to_vec()),
+            SpiTransaction::send(0x00),
+            SpiTransaction::read(0x09),
+            SpiTransaction::send(0x00),
+            SpiTransaction::read(0x00),
+            SpiTransaction::send(0x00),
+            SpiTransaction::read(0x01),
+            SpiTransaction::send(0x00),
+            SpiTransaction::read(0x00),
+            SpiTransaction::send(0x00),
+            SpiTransaction::read(0x01),
+            SpiTransaction::send(0x00),
+            SpiTransaction::read(0x00),
+            SpiTransaction::send(0x00),
+            SpiTransaction::read(0x05),
+            SpiTransaction::send(0x00),
+            SpiTransaction::read(0x00),
+            SpiTransaction::send(0x00),
+            SpiTransaction::read(0x01),
+            SpiTransaction::send(0x00),
+            SpiTransaction::read(0x00),
+            SpiTransaction::send(0x00),
+            SpiTransaction::read(0x01),
+            SpiTransaction::send(0x00),
+            SpiTransaction::read(0x20),
+            SpiTransaction::send(0x00),
+            SpiTransaction::read(0x01),
+            SpiTransaction::send(0x00),
+            SpiTransaction::read(0x00),
+            SpiTransaction::send(0x00),
+            SpiTransaction::read(0x00),
+            // CRC 3452547215 cdc9b08f over 15 bytes
 
-SpiTransaction::send(0x00),
-SpiTransaction::read(0x8f),
-SpiTransaction::send(0x00),
-SpiTransaction::read(0xb0),
-SpiTransaction::send(0x00),
-SpiTransaction::read(0xc9),
-SpiTransaction::send(0x00),
-SpiTransaction::read(0xcd),
-SpiTransaction::transfer([0x7f,0xff,0x01,0x7f].to_vec(),[0,0,0,0].to_vec()),
-SpiTransaction::transfer([0x01,0x00,0x0a,0x00,0x04,0x00,0x01,0x00,0x01,0x00,0x03,0x00,0x00,0x00,0xd9,0xb4,0x22,0xff,].to_vec(),[0;18].to_vec()),
-SpiTransaction::transfer([0,0,0,0].to_vec(),[0x7f,0xff,0x01,0x7f].to_vec()),
-SpiTransaction::transfer([0,0,0,0].to_vec() ,[0,0,28-2,0].to_vec()),
-SpiTransaction::send(0x00),
-SpiTransaction::read(0x14),
-SpiTransaction::send(0x00),
-SpiTransaction::read(0x00),
-SpiTransaction::send(0x00),
-SpiTransaction::read(0x01),
-SpiTransaction::send(0x00),
-SpiTransaction::read(0x00),
-SpiTransaction::send(0x00),
-SpiTransaction::read(0x01),
-SpiTransaction::send(0x00),
-SpiTransaction::read(0x00),
-SpiTransaction::send(0x00),
-SpiTransaction::read(0x03),
-SpiTransaction::send(0x00),
-SpiTransaction::read(0x00),
-SpiTransaction::send(0x00),
-SpiTransaction::read(0x03),
-SpiTransaction::send(0x00),
-SpiTransaction::read(0x00),
-SpiTransaction::send(0x00),
-SpiTransaction::read(0x0a),
-SpiTransaction::send(0x00),
-SpiTransaction::read(0x00),
-SpiTransaction::send(0x00),
-SpiTransaction::read(0x01),
-SpiTransaction::send(0x00),
-SpiTransaction::read(0x00),
-SpiTransaction::send(0x00),
-SpiTransaction::read(0x01),
-SpiTransaction::send(0x00),
-SpiTransaction::read(0x06),
-SpiTransaction::send(0x00),
-SpiTransaction::read(0x00),
-SpiTransaction::send(0x00),
-SpiTransaction::read(0x02),
-SpiTransaction::send(0x00),
-SpiTransaction::read(0x00),
-SpiTransaction::send(0x00),
-SpiTransaction::read(0x01),
-SpiTransaction::send(0x00),
-SpiTransaction::read(0x00),
-SpiTransaction::send(0x00),
-SpiTransaction::read(0x01),
-SpiTransaction::send(0x00),
-SpiTransaction::read(0x20),
-SpiTransaction::send(0x00),
-SpiTransaction::read(0x01),
-SpiTransaction::send(0x00),
-SpiTransaction::read(0x00),
-SpiTransaction::send(0x00),
-SpiTransaction::read(0x00),
-// CRC 4072009766 f2b5f026 over 26 bytes
+            SpiTransaction::send(0x00),
+            SpiTransaction::read(0x8f),
+            SpiTransaction::send(0x00),
+            SpiTransaction::read(0xb0),
+            SpiTransaction::send(0x00),
+            SpiTransaction::read(0xc9),
+            SpiTransaction::send(0x00),
+            SpiTransaction::read(0xcd),
+            SpiTransaction::transfer([0x7f,0xff,0x01,0x7f].to_vec(),[0,0,0,0].to_vec()),
+            SpiTransaction::transfer([0x01,0x00,0x0a,0x00,0x04,0x00,0x01,0x00,0x01,0x00,0x03,0x00,0x00,0x00,0xd9,0xb4,0x22,0xff,].to_vec(),[0;18].to_vec()),
+            SpiTransaction::transfer([0,0,0,0].to_vec(),[0x7f,0xff,0x01,0x7f].to_vec()),
+            SpiTransaction::transfer([0,0,0,0].to_vec() ,[0,0,28-2,0].to_vec()),
+            SpiTransaction::send(0x00),
+            SpiTransaction::read(0x14),
+            SpiTransaction::send(0x00),
+            SpiTransaction::read(0x00),
+            SpiTransaction::send(0x00),
+            SpiTransaction::read(0x01),
+            SpiTransaction::send(0x00),
+            SpiTransaction::read(0x00),
+            SpiTransaction::send(0x00),
+            SpiTransaction::read(0x01),
+            SpiTransaction::send(0x00),
+            SpiTransaction::read(0x00),
+            SpiTransaction::send(0x00),
+            SpiTransaction::read(0x03),
+            SpiTransaction::send(0x00),
+            SpiTransaction::read(0x00),
+            SpiTransaction::send(0x00),
+            SpiTransaction::read(0x03),
+            SpiTransaction::send(0x00),
+            SpiTransaction::read(0x00),
+            SpiTransaction::send(0x00),
+            SpiTransaction::read(0x0a),
+            SpiTransaction::send(0x00),
+            SpiTransaction::read(0x00),
+            SpiTransaction::send(0x00),
+            SpiTransaction::read(0x01),
+            SpiTransaction::send(0x00),
+            SpiTransaction::read(0x00),
+            SpiTransaction::send(0x00),
+            SpiTransaction::read(0x01),
+            SpiTransaction::send(0x00),
+            SpiTransaction::read(0x06),
+            SpiTransaction::send(0x00),
+            SpiTransaction::read(0x00),
+            SpiTransaction::send(0x00),
+            SpiTransaction::read(0x02),
+            SpiTransaction::send(0x00),
+            SpiTransaction::read(0x00),
+            SpiTransaction::send(0x00),
+            SpiTransaction::read(0x01),
+            SpiTransaction::send(0x00),
+            SpiTransaction::read(0x00),
+            SpiTransaction::send(0x00),
+            SpiTransaction::read(0x01),
+            SpiTransaction::send(0x00),
+            SpiTransaction::read(0x20),
+            SpiTransaction::send(0x00),
+            SpiTransaction::read(0x01),
+            SpiTransaction::send(0x00),
+            SpiTransaction::read(0x00),
+            SpiTransaction::send(0x00),
+            SpiTransaction::read(0x00),
+            // CRC 4072009766 f2b5f026 over 26 bytes
 
-SpiTransaction::send(0x00),
-SpiTransaction::read(0x26),
-SpiTransaction::send(0x00),
-SpiTransaction::read(0xf0),
-SpiTransaction::send(0x00),
-SpiTransaction::read(0xb5),
-SpiTransaction::send(0x00),
-SpiTransaction::read(0xf2),
-SpiTransaction::transfer([0x7f,0xff,0x01,0x7f].to_vec(),[0,0,0,0].to_vec()),
+            SpiTransaction::send(0x00),
+            SpiTransaction::read(0x26),
+            SpiTransaction::send(0x00),
+            SpiTransaction::read(0xf0),
+            SpiTransaction::send(0x00),
+            SpiTransaction::read(0xb5),
+            SpiTransaction::send(0x00),
+            SpiTransaction::read(0xf2),
+            SpiTransaction::transfer([0x7f,0xff,0x01,0x7f].to_vec(),[0,0,0,0].to_vec()),
 
         ];
 
@@ -860,6 +860,73 @@ SpiTransaction::transfer([0x7f,0xff,0x01,0x7f].to_vec(),[0,0,0,0].to_vec()),
         match ans {
             Err(x) => {assert!(false, "Function returned unexpected error")}
             Ok(_) => {}
+        }
+
+        let (mut spi, (_a,_b,_c)) = encoder.teardown();
+        spi.done();
+
+	}
+    #[test]
+    fn capture_image() {
+		use super::*;
+        let expectations = [
+                SpiTransaction::transfer([0x01,0x00,0x0a,0x00,0x04,0x00,0x01,0x00,0x01,0x00,0x01,0x00,0x00,0x00,0x52,0x7c,0x2b,0x55,].to_vec(),[0;18].to_vec()),
+                SpiTransaction::transfer([0,0,0,0].to_vec(),[0x7f,0xff,0x01,0x7f].to_vec()),
+                SpiTransaction::transfer([0,0,0,0].to_vec() ,[0,0,17-2,0].to_vec()),
+                SpiTransaction::send(0x00),
+                SpiTransaction::read(0x09),
+                SpiTransaction::send(0x00),
+                SpiTransaction::read(0x00),
+                SpiTransaction::send(0x00),
+                SpiTransaction::read(0x01),
+                SpiTransaction::send(0x00),
+                SpiTransaction::read(0x00),
+                SpiTransaction::send(0x00),
+                SpiTransaction::read(0x01),
+                SpiTransaction::send(0x00),
+                SpiTransaction::read(0x00),
+                SpiTransaction::send(0x00),
+                SpiTransaction::read(0x01),
+                SpiTransaction::send(0x00),
+                SpiTransaction::read(0x00),
+                SpiTransaction::send(0x00),
+                SpiTransaction::read(0x01),
+                SpiTransaction::send(0x00),
+                SpiTransaction::read(0x00),
+                SpiTransaction::send(0x00),
+                SpiTransaction::read(0x01),
+                SpiTransaction::send(0x00),
+                SpiTransaction::read(0x20),
+                SpiTransaction::send(0x00),
+                SpiTransaction::read(0x01),
+                SpiTransaction::send(0x00),
+                SpiTransaction::read(0x00),
+                SpiTransaction::send(0x00),
+                SpiTransaction::read(0x00),
+                // CRC 2418401667 9025e183 over 15 bytes
+
+                SpiTransaction::send(0x00),
+                SpiTransaction::read(0x83),
+                SpiTransaction::send(0x00),
+                SpiTransaction::read(0xe1),
+                SpiTransaction::send(0x00),
+                SpiTransaction::read(0x25),
+                SpiTransaction::send(0x00),
+                SpiTransaction::read(0x90),
+                SpiTransaction::transfer([0x7f,0xff,0x01,0x7f].to_vec(),[0,0,0,0].to_vec()),
+        ];
+
+        let mut spi = SpiMock::new(&expectations);
+
+        let dummy_cs = DummyInterface::new([false,false,false].to_vec());
+        let dummy_irq = DummyInterface::new([false,true,false,true,false,true,false,true,false,true,false,true,false,true,false,true,false,true,false,true,false,true,false,true].to_vec());
+        let dummy_reset = DummyInterface::new([false].to_vec());
+
+		let mut encoder = BmLite::new(spi, dummy_cs,dummy_reset,dummy_irq );
+		let ans = encoder.capture(0);
+        match ans {
+            Err(x) => {assert!(false, "Function returned unexpected error")}
+            Ok(ans) => {assert!(ans == 0) }
         }
 
         let (mut spi, (_a,_b,_c)) = encoder.teardown();
