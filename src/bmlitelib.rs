@@ -209,8 +209,8 @@ where  SPI: Transfer<u8, Error = E>,
            v.push(0);
         }
         {   // Scope off mutable borrow of v
-            // internal array of v is returned in _ans but it still pressent in vector v
-            // when we end the mutable borrow.
+            // internal array of v is returned in _ans but updated data still pressent
+            // in vector v when the mutable borrow ends.
             let _ans = self.spi.transfer( &mut v).map_err(Error::HalErr)?;
         }
         self.cs.set_high();
@@ -241,6 +241,41 @@ where  SPI: Transfer<u8, Error = E>,
         // v[8:9] CMD should be same as CMD sent.
         Ok(v.split_off(6))
     }
+
+    fn parse_result<Closure>(&mut self, mut resp:Vec<u8>,cmd:u16,mut callback:Closure  ) ->Result<(), Error<E>>
+    
+    where Closure:FnMut(u16,&[u8],usize) {
+   // Parse result args
+        let len = resp.len();
+        if len <6 {
+             // expect at lease some data here
+             return Err(Error::UnexpectedResponse)
+        }
+        if cmd != as_u16(resp[1],resp[0]){
+             // command response did not match command.
+             return Err(Error::UnexpectedResponse)
+        }
+        let argc = as_u16(resp[3],resp[2]);
+        let mut current:usize = 4;
+
+        for _i in 0..argc{
+            if len < current+4 {
+                // Parse error
+                return Err(Error::UnexpectedResponse)
+            }
+            let arg = as_u16(resp[1+current],resp[current]) ;
+            let arglen = as_u16(resp[3+current],resp[2+current]) as usize ;
+            current +=4;
+            if len < current+arglen {
+                // Parse error
+                return Err(Error::UnexpectedResponse)
+            }
+            callback(arg,&resp[current..current+arglen],arglen as usize);
+            current +=arglen; 
+        }
+        Ok(())
+    }
+
 	pub fn get_version(&mut self) -> Result<u8, Error<E>>  {
         let cmd = 0x3004;
         let mut transport = <Vec<u8> as TransportBuffer<Vec<u8>>>::create_transport_buffer().set_cmd(cmd).add_arg(0x1004);
@@ -272,16 +307,18 @@ where  SPI: Transfer<u8, Error = E>,
         }
         let resp=self.link(transport)?;
 
-        if resp.len() <6 {
-             // expect at lease some data here
-             return Err(Error::UnexpectedResponse)
-        }
-        let argc = as_u16(resp[3],resp[2]);
-        if argc ==1 && as_u16(resp[5],resp[4]) == ARG_RESULT {
-            if 1 == as_u16(resp[7],resp[6]) {
-            // Expected result one byte
-                return Ok(resp[8])
+        let mut captureresult = 0;
+        let mut ok_resp = false;
+        self.parse_result(resp,cmd, |arg,argv,arglen|{
+            match arg {
+               ARG_RESULT => {ok_resp = true;
+                              captureresult = (LittleEndian::read_uint(&argv,arglen) & 0xFFFF_FFFF )as u32;
+                            }
+                _other => {} // For argcs we do not care about
             }
+        })?;
+        if ok_resp  {
+            return Ok(captureresult as _);
         }
         Err(Error::UnexpectedResponse)
     }
@@ -311,43 +348,18 @@ where  SPI: Transfer<u8, Error = E>,
             transport=transport.add_arg(state);
         }
         let resp=self.link(transport)?;
-
-        // Parse result args
-        let len = resp.len();
-        if len <6 {
-             // expect at lease some data here
-             return Err(Error::UnexpectedResponse)
-        }
-        if cmd != as_u16(resp[1],resp[0]){
-             // command response did not match command.
-             return Err(Error::UnexpectedResponse)
-        }
-        let argc = as_u16(resp[3],resp[2]);
-        let mut current:usize = 4;
         // handle all responses here
         let mut remaining:u32 = 0;
         let mut ok_resp = false;
-        for _i in 0..argc{
-            if len < current+4 {
-                // Parse error
-                return Err(Error::UnexpectedResponse)
-            }
-            let arg = as_u16(resp[1+current],resp[current]) ;
-            let arglen = as_u16(resp[3+current],resp[2+current]) as usize ;
-            current +=4;
-            if len < current+arglen {
-                // Parse error
-                return Err(Error::UnexpectedResponse)
-            }
+        self.parse_result(resp,cmd, |arg,argv,arglen|{
             match arg {
                ARG_RESULT => {ok_resp = true}
-               ARG_COUNT  => { remaining = (LittleEndian::read_uint(&resp[current..current+arglen],arglen) & 0xFFFF_FFFF )as u32; }
-                other => {} // For argcs we do not care about
+               ARG_COUNT  => { remaining = (LittleEndian::read_uint(&argv,arglen) & 0xFFFF_FFFF )as u32; }
+                _other => {} // For argcs we do not care about
             }
-           current +=arglen; 
-        }
+        })?;
         if ok_resp {
-            return Ok(remaining);
+             return Ok(remaining);
         }
         Err(Error::UnexpectedResponse)
     }
@@ -356,37 +368,14 @@ where  SPI: Transfer<u8, Error = E>,
         let cmd = 0x0006;
         let mut transport = <Vec<u8> as TransportBuffer<Vec<u8>>>::create_transport_buffer().set_cmd(cmd).add_arg(0x1008).add_arg_u16(0x0006,tplid);
         let resp=self.link(transport)?;
-// Parse result args
-        let len = resp.len(); if len <6 {
-             // expect at lease some data here
-             return Err(Error::UnexpectedResponse)
-        }
-        if cmd != as_u16(resp[1],resp[0]){
-             // command response did not match command.
-             return Err(Error::UnexpectedResponse)
-        }
-        let argc = as_u16(resp[3],resp[2]);
-        let mut current:usize = 4;
         // handle all responses here
         let mut ok_resp = false;
-        for _i in 0..argc{
-            if len < current+4 {
-                // Parse error
-                return Err(Error::UnexpectedResponse)
-            }
-            let arg = as_u16(resp[1+current],resp[current]) ;
-            let arglen = as_u16(resp[3+current],resp[2+current]) as usize ;
-            current +=4;
-            if len < current+arglen {
-                // Parse error
-                return Err(Error::UnexpectedResponse)
-            }
+        self.parse_result(resp,cmd, |arg,argv,arglen|{
             match arg {
                ARG_RESULT => {ok_resp = true}
-               other => {} // For argcs we do not care about
+                _other => {} // For argcs we do not care about
             }
-           current +=arglen; 
-        }
+        })?;
         if ok_resp {
             return Ok(0);
         }
@@ -414,25 +403,14 @@ where  SPI: Transfer<u8, Error = E>,
         // handle all responses here
         let mut remaining:u32 = 0;
         let mut ok_resp = false;
-        for _i in 0..argc{
-            if len < current+4 {
-                // Parse error
-                return Err(Error::UnexpectedResponse)
-            }
-            let arg = as_u16(resp[1+current],resp[current]) ;
-            let arglen = as_u16(resp[3+current],resp[2+current]) as usize ;
-            current +=4;
-            if len < current+arglen {
-                // Parse error
-                return Err(Error::UnexpectedResponse)
-            }
+
+        self.parse_result(resp,cmd, |arg,argv,arglen|{
             match arg {
                ARG_RESULT => {ok_resp = true}
-               ARG_COUNT  => { remaining = (LittleEndian::read_uint(&resp[current..current+arglen],arglen) & 0xFFFF_FFFF )as u32; }
-                other => {} // For argcs we do not care about
+               ARG_COUNT  => { remaining = (LittleEndian::read_uint(&argv,arglen) & 0xFFFF_FFFF )as u32; }
+               _other => {} // For argcs we do not care about
             }
-           current +=arglen; 
-        }
+        })?;
         if ok_resp {
             return Ok(remaining);
         }
@@ -449,43 +427,18 @@ where  SPI: Transfer<u8, Error = E>,
         let mut transport = <Vec<u8> as TransportBuffer<Vec<u8>>>::create_transport_buffer().set_cmd(cmd);
 
         let resp=self.link(transport)?;
-
-        // Parse result args
-        let len = resp.len();
-        if len <6 {
-             // expect at lease some data here
-             return Err(Error::UnexpectedResponse)
-        }
-        if cmd != as_u16(resp[1],resp[0]){
-             // command response did not match command.
-             return Err(Error::UnexpectedResponse)
-        }
-        let argc = as_u16(resp[3],resp[2]);
-        let mut current:usize = 4;
-         // handle all responses here
+        // handle all responses here
         let mut remaining = 0xFFFF_FFFF;
         let mut litematch:u32 = 0;
         let mut ok_resp = false;
-        for _i in 0..argc{
-            if len < current+4 {
-                // Parse error
-                return Err(Error::UnexpectedResponse)
-            }
-            let arg = as_u16(resp[1+current],resp[current]) ;
-            let arglen = as_u16(resp[3+current],resp[2+current]) as usize ;
-            current +=4;
-            if len < current+arglen {
-                // Parse error
-                return Err(Error::UnexpectedResponse)
-            }
+        self.parse_result(resp,cmd, |arg,argv,arglen|{
             match arg {
                ARG_RESULT => {ok_resp = true}
-               ARG_MATCH  => { litematch = (LittleEndian::read_uint(&resp[current..current+arglen],arglen) & 0xFFFF_FFFF )as u32; }
-               ARG_ID  => { remaining = (LittleEndian::read_uint(&resp[current..current+arglen],arglen) & 0xFFFF_FFFF )as u32; }
+               ARG_MATCH  => { litematch = (LittleEndian::read_uint(&argv,arglen) & 0xFFFF_FFFF )as u32; }
+               ARG_ID  => { remaining = (LittleEndian::read_uint(&argv,arglen) & 0xFFFF_FFFF )as u32; }
                 _other => {} // For argcs we do not care about
             }
-           current +=arglen; 
-        }
+        })?;
         if litematch == 0 {
             return Err(Error::NoMatch);
         }
@@ -506,14 +459,18 @@ where  SPI: Transfer<u8, Error = E>,
         transport = transport.add_arg(0x0002); //0002 Enroll
 
         let resp=self.link(transport)?;
-
-        if resp.len() <6 {
-             // expect at lease some data here
-             return Err(Error::UnexpectedResponse)
-        }
-        let argc = as_u16(resp[3],resp[2]);
-        if argc ==1 && as_u16(resp[5],resp[4]) == ARG_RESULT {
-            return Ok(resp[7])
+        let mut fingerpresent = 0;
+        let mut ok_resp = false;
+        self.parse_result(resp,cmd, |arg,argv,arglen|{
+            match arg {
+               ARG_RESULT => {ok_resp = true;
+                              fingerpresent = (LittleEndian::read_uint(&argv,arglen) & 0xFFFF_FFFF )as u32;
+                            }
+                _other => {} // For argcs we do not care about
+            }
+        })?;
+        if ok_resp  {
+            return Ok(fingerpresent as _);
         }
         Err(Error::UnexpectedResponse)
     }
@@ -523,26 +480,21 @@ where  SPI: Transfer<u8, Error = E>,
         let resp=self.link(transport)?;
 
 
-        if resp.len() <6 {
-             // expect at lease some data here
-             return Err(Error::UnexpectedResponse)
+        let mut deleteallresult = 0;
+        let mut ok_resp = false;
+        self.parse_result(resp,cmd, |arg,argv,arglen|{
+            match arg {
+               ARG_RESULT => {ok_resp = true;
+                              deleteallresult = (LittleEndian::read_uint(&argv,arglen) & 0xFFFF_FFFF )as u32;
+                            }
+                _other => {} // For argcs we do not care about
+            }
+        })?;
+        if ok_resp  {
+            return Ok(deleteallresult as _);
         }
-        let argc = as_u16(resp[3],resp[2]);
-
-        if cmd != as_u16(resp[1],resp[0]){
-             // command response did not match command.
-             return Err(Error::UnexpectedResponse)
-        }
-        if argc != 1 {
-             return Err(Error::UnexpectedResponse)
-        }
-        if as_u16(resp[5],resp[4]) != ARG_RESULT {
-             return Err(Error::UnexpectedResponse)
-        }
-        let argc = as_u16(resp[3],resp[2]);
-
-        Ok(resp[7])
-	}
+        Err(Error::UnexpectedResponse)	
+    }
 }
 
 /*
