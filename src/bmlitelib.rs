@@ -20,8 +20,6 @@ extern crate crc;
 use crc::crc32;
 extern crate byteorder;
 
-#[macro_use(block)]
-
 extern crate nb;
 
 use embedded_hal::digital::{InputPin,OutputPin};
@@ -30,15 +28,15 @@ use embedded_hal::blocking::spi::Transfer;
 use byteorder::{ByteOrder,LittleEndian};
 trait TransportBuffer<Output>{
     fn create_transport_buffer() -> Output;
-    fn push_crc(mut self) ->Self;
-    fn set_cmd(mut self,u16) ->Self;
+    fn push_crc(self) ->Self;
+    fn set_cmd(self,u16) ->Self;
     fn get_cmd(&self) -> Option<u16>;
-    fn push_u16(mut self,u16) ->Self;
-    fn push_u32(mut self,u32) ->Self;
-    fn add_arg(mut self,u16) ->Self;
-    fn add_arg_u8(mut self,u16,u8) ->Self;
-    fn add_arg_u16(mut self,u16,u16) ->Self;
-    fn add_arg_u32(mut self,u16,u32) ->Self;
+    fn push_u16(self,u16) ->Self;
+    fn push_u32(self,u32) ->Self;
+    fn add_arg(self,u16) ->Self;
+    fn add_arg_u8(self,u16,u8) ->Self;
+    fn add_arg_u16(self,u16,u16) ->Self;
+    fn add_arg_u32(self,u16,u32) ->Self;
 }
 
 
@@ -56,14 +54,14 @@ impl TransportBuffer<Vec<u8>> for Vec<u8>
         }
         None
     }
-    fn set_cmd(mut self,cmd:u16) ->Self{
+    fn set_cmd(self,cmd:u16) ->Self{
         if self.len()!=10{
             assert!(false,"unexpected command added");
             //self.push or correct code
         }
         self.push_u16(cmd).push_u16(0)
     }
-    fn push_crc(mut self) -> Self{
+    fn push_crc(self) -> Self{
         let crc = crc::crc32::checksum_ieee(&self[4..]);
 		self.push_u32(crc)
     }
@@ -103,6 +101,49 @@ impl TransportBuffer<Vec<u8>> for Vec<u8>
 		self.push_u16(arg).push_u16(4).push_u32(data)
     }
 }
+
+trait LinkBuffer{
+    fn parse_result<Closure,E>(&self,u16, f:Closure  ) ->Result<(), Error<E>>
+    where Closure:FnMut(u16,&[u8],usize);
+}
+
+impl LinkBuffer for Vec<u8>{
+   fn parse_result<Closure,E>(&self,cmd:u16,mut callback:Closure  ) ->Result<(), Error<E>>
+    
+    where Closure:FnMut(u16,&[u8],usize),
+    {
+   // Parse result args
+        let len = self.len();
+        if len <6 {
+             // expect at lease some data here
+             return Err(Error::UnexpectedResponse)
+        }
+        if cmd != as_u16(self[1],self[0]){
+             // command response did not match command.
+             return Err(Error::UnexpectedResponse)
+        }
+        let argc = as_u16(self[3],self[2]);
+        let mut current:usize = 4;
+
+        for _i in 0..argc{
+            if len < current+4 {
+                // Parse error
+                return Err(Error::UnexpectedResponse)
+            }
+            let arg = as_u16(self[1+current],self[current]) ;
+            let arglen = as_u16(self[3+current],self[2+current]) as usize ;
+            current +=4;
+            if len < current+arglen {
+                // Parse error
+                return Err(Error::UnexpectedResponse)
+            }
+            callback(arg,&self[current..current+arglen],arglen as usize);
+            current +=arglen; 
+        }
+        Ok(())
+    }
+}
+
 pub struct BmLite<SPI,CS,RST,IRQ> {
 	spi: SPI,
 	cs: CS,
@@ -121,8 +162,8 @@ pub enum Error<E>{
 
 const    ARG_RESULT:u16 =  0x2001;
 const    ARG_COUNT:u16 =   0x2002;
-const    ARG_TIMEOUT:u16 = 0x5001;
-const    ARG_VERSION:u16 = 0x6004;
+const    _ARG_TIMEOUT:u16 = 0x5001;
+const    _ARG_VERSION:u16 = 0x6004;
 const    ARG_MATCH:u16 =   0x000A;
 const    ARG_ID:u16 =      0x0006;
 
@@ -220,7 +261,7 @@ where  SPI: Transfer<u8, Error = E>,
         if crc == LittleEndian::read_u32(&v[transportsize-4..transportsize]){
             self.cs.set_low();
             let mut ack = [0x7f,0xff,0x01,0x7f];
-            let mut ack = self.spi.transfer(&mut ack).map_err(Error::HalErr)?;
+            let _ack = self.spi.transfer(&mut ack).map_err(Error::HalErr)?;
             self.cs.set_high();
         }else {
             //crc error
@@ -242,58 +283,22 @@ where  SPI: Transfer<u8, Error = E>,
         Ok(v.split_off(6))
     }
 
-    fn parse_result<Closure>(&mut self, mut resp:Vec<u8>,cmd:u16,mut callback:Closure  ) ->Result<(), Error<E>>
-    
-    where Closure:FnMut(u16,&[u8],usize) {
-   // Parse result args
-        let len = resp.len();
-        if len <6 {
-             // expect at lease some data here
-             return Err(Error::UnexpectedResponse)
-        }
-        if cmd != as_u16(resp[1],resp[0]){
-             // command response did not match command.
-             return Err(Error::UnexpectedResponse)
-        }
-        let argc = as_u16(resp[3],resp[2]);
-        let mut current:usize = 4;
-
-        for _i in 0..argc{
-            if len < current+4 {
-                // Parse error
-                return Err(Error::UnexpectedResponse)
-            }
-            let arg = as_u16(resp[1+current],resp[current]) ;
-            let arglen = as_u16(resp[3+current],resp[2+current]) as usize ;
-            current +=4;
-            if len < current+arglen {
-                // Parse error
-                return Err(Error::UnexpectedResponse)
-            }
-            callback(arg,&resp[current..current+arglen],arglen as usize);
-            current +=arglen; 
-        }
-        Ok(())
-    }
-
 	pub fn get_version(&mut self) -> Result<u8, Error<E>>  {
         let cmd = 0x3004;
-        let mut transport = <Vec<u8> as TransportBuffer<Vec<u8>>>::create_transport_buffer().set_cmd(cmd).add_arg(0x1004);
+        let transport = <Vec<u8> as TransportBuffer<Vec<u8>>>::create_transport_buffer().set_cmd(cmd).add_arg(0x1004);
         let resp=self.link(transport)?;
 
-
-        if resp.len() <6 {
-             // expect at lease some data here
-             return Err(Error::UnexpectedResponse)
-        }
-        if cmd != as_u16(resp[1],resp[0]){
-             // command response did not match command.
-             return Err(Error::UnexpectedResponse)
-        }
-        // expected data len = 1
-        //          Result == ARG_RESULT
-        // val ==1
-        if as_u16(resp[5],resp[4]) != ARG_RESULT {
+        // handle all responses here
+        let mut ok_resp = false;
+        resp.parse_result(cmd, |arg,_argv,_arglen|{
+            match arg {
+               ARG_RESULT => {ok_resp = true}
+            //   ARG_MATCH  => { litematch = (LittleEndian::read_uint(&argv,arglen) & 0xFFFF_FFFF )as u32; }
+            //   ARG_ID  => { remaining = (LittleEndian::read_uint(&argv,arglen) & 0xFFFF_FFFF )as u32; }
+                _other => {} // For args we do not care about
+            }
+        })?;
+        if ! ok_resp {
              return Err(Error::UnexpectedResponse)
         }
         Ok(0)
@@ -309,12 +314,12 @@ where  SPI: Transfer<u8, Error = E>,
 
         let mut captureresult = 0;
         let mut ok_resp = false;
-        self.parse_result(resp,cmd, |arg,argv,arglen|{
+        resp.parse_result(cmd, |arg,argv,arglen|{
             match arg {
                ARG_RESULT => {ok_resp = true;
                               captureresult = (LittleEndian::read_uint(&argv,arglen) & 0xFFFF_FFFF )as u32;
                             }
-                _other => {} // For argcs we do not care about
+                _other => {} // For args we do not care about
             }
         })?;
         if ok_resp  {
@@ -351,11 +356,11 @@ where  SPI: Transfer<u8, Error = E>,
         // handle all responses here
         let mut remaining:u32 = 0;
         let mut ok_resp = false;
-        self.parse_result(resp,cmd, |arg,argv,arglen|{
+        resp.parse_result(cmd, |arg,argv,arglen|{
             match arg {
                ARG_RESULT => {ok_resp = true}
                ARG_COUNT  => { remaining = (LittleEndian::read_uint(&argv,arglen) & 0xFFFF_FFFF )as u32; }
-                _other => {} // For argcs we do not care about
+                _other => {} // For args we do not care about
             }
         })?;
         if ok_resp {
@@ -366,14 +371,14 @@ where  SPI: Transfer<u8, Error = E>,
 
 	pub fn do_savetemplate(&mut self , tplid:u16 ) -> Result<u32, Error<E>>  {
         let cmd = 0x0006;
-        let mut transport = <Vec<u8> as TransportBuffer<Vec<u8>>>::create_transport_buffer().set_cmd(cmd).add_arg(0x1008).add_arg_u16(0x0006,tplid);
+        let transport = <Vec<u8> as TransportBuffer<Vec<u8>>>::create_transport_buffer().set_cmd(cmd).add_arg(0x1008).add_arg_u16(0x0006,tplid);
         let resp=self.link(transport)?;
         // handle all responses here
         let mut ok_resp = false;
-        self.parse_result(resp,cmd, |arg,argv,arglen|{
+        resp.parse_result(cmd, |arg,_argv,_arglen|{
             match arg {
                ARG_RESULT => {ok_resp = true}
-                _other => {} // For argcs we do not care about
+                _other => {} // For args we do not care about
             }
         })?;
         if ok_resp {
@@ -385,30 +390,19 @@ where  SPI: Transfer<u8, Error = E>,
 
 	pub fn do_extract(&mut self) -> Result<u32, Error<E>>  {
         let cmd = 0x0005;
-        let mut transport = <Vec<u8> as TransportBuffer<Vec<u8>>>::create_transport_buffer().set_cmd(cmd).add_arg(0x0008);
+        let transport = <Vec<u8> as TransportBuffer<Vec<u8>>>::create_transport_buffer().set_cmd(cmd).add_arg(0x0008);
+
         let resp=self.link(transport)?;
 
-        // Parse result args
-        let len = resp.len();
-        if len <6 {
-             // expect at lease some data here
-             return Err(Error::UnexpectedResponse)
-        }
-        if cmd != as_u16(resp[1],resp[0]){
-             // command response did not match command.
-             return Err(Error::UnexpectedResponse)
-        }
-        let argc = as_u16(resp[3],resp[2]);
-        let mut current:usize = 4;
         // handle all responses here
         let mut remaining:u32 = 0;
         let mut ok_resp = false;
 
-        self.parse_result(resp,cmd, |arg,argv,arglen|{
+        resp.parse_result(cmd, |arg,argv,arglen|{
             match arg {
                ARG_RESULT => {ok_resp = true}
                ARG_COUNT  => { remaining = (LittleEndian::read_uint(&argv,arglen) & 0xFFFF_FFFF )as u32; }
-               _other => {} // For argcs we do not care about
+               _other => {} // For args we do not care about
             }
         })?;
         if ok_resp {
@@ -424,19 +418,19 @@ where  SPI: Transfer<u8, Error = E>,
     }
 	pub fn do_identify(&mut self) -> Result<u32, Error<E>>  {
         let cmd = 0x0003;
-        let mut transport = <Vec<u8> as TransportBuffer<Vec<u8>>>::create_transport_buffer().set_cmd(cmd);
+        let transport = <Vec<u8> as TransportBuffer<Vec<u8>>>::create_transport_buffer().set_cmd(cmd);
 
         let resp=self.link(transport)?;
         // handle all responses here
         let mut remaining = 0xFFFF_FFFF;
         let mut litematch:u32 = 0;
         let mut ok_resp = false;
-        self.parse_result(resp,cmd, |arg,argv,arglen|{
+        resp.parse_result(cmd, |arg,argv,arglen|{
             match arg {
                ARG_RESULT => {ok_resp = true}
                ARG_MATCH  => { litematch = (LittleEndian::read_uint(&argv,arglen) & 0xFFFF_FFFF )as u32; }
                ARG_ID  => { remaining = (LittleEndian::read_uint(&argv,arglen) & 0xFFFF_FFFF )as u32; }
-                _other => {} // For argcs we do not care about
+                _other => {} // For args we do not care about
             }
         })?;
         if litematch == 0 {
@@ -461,12 +455,12 @@ where  SPI: Transfer<u8, Error = E>,
         let resp=self.link(transport)?;
         let mut fingerpresent = 0;
         let mut ok_resp = false;
-        self.parse_result(resp,cmd, |arg,argv,arglen|{
+        resp.parse_result(cmd, |arg,argv,arglen|{
             match arg {
                ARG_RESULT => {ok_resp = true;
                               fingerpresent = (LittleEndian::read_uint(&argv,arglen) & 0xFFFF_FFFF )as u32;
                             }
-                _other => {} // For argcs we do not care about
+                _other => {} // For args we do not care about
             }
         })?;
         if ok_resp  {
@@ -476,18 +470,17 @@ where  SPI: Transfer<u8, Error = E>,
     }
 	pub fn delete_all(&mut self) -> Result<u8, Error<E>>  {
         let cmd = 0x4002;
-        let mut transport = <Vec<u8> as TransportBuffer<Vec<u8>>>::create_transport_buffer().set_cmd(cmd).add_arg(0x1009).add_arg(0x0007);
+        let transport = <Vec<u8> as TransportBuffer<Vec<u8>>>::create_transport_buffer().set_cmd(cmd).add_arg(0x1009).add_arg(0x0007);
         let resp=self.link(transport)?;
-
 
         let mut deleteallresult = 0;
         let mut ok_resp = false;
-        self.parse_result(resp,cmd, |arg,argv,arglen|{
+        resp.parse_result(cmd, |arg,argv,arglen|{
             match arg {
                ARG_RESULT => {ok_resp = true;
                               deleteallresult = (LittleEndian::read_uint(&argv,arglen) & 0xFFFF_FFFF )as u32;
                             }
-                _other => {} // For argcs we do not care about
+                _other => {} // For args we do not care about
             }
         })?;
         if ok_resp  {
@@ -497,17 +490,9 @@ where  SPI: Transfer<u8, Error = E>,
     }
 }
 
-/*
-fn main() {
-	let mut dummy = DummyInterface::new();
-	let mut encoder = BmLite{internaldata: 0, myio: dummy};
-	encoder.encode();
-}
-*/
 #[cfg(test)]
 mod tests {
 use tests::std::cell::RefCell;
-use core::borrow::BorrowMut;
 
 struct DummyInterface {
 	data:  RefCell<Vec<bool>>,
@@ -534,6 +519,7 @@ impl super::InputPin for DummyInterface {
 	    ! self.is_high()
     }
 }
+
 extern crate embedded_hal_mock;
 extern crate std;
 use tests::embedded_hal_mock::spi::{Mock as SpiMock, Transaction as SpiTransaction};
@@ -566,7 +552,7 @@ use tests::std::vec::*;
 
         ];
 
-        let mut spi = SpiMock::new(&expectations);
+        let spi = SpiMock::new(&expectations);
 
         let dummy_cs = DummyInterface::new([false,false,false].to_vec());
         let dummy_irq = DummyInterface::new([false,true,false,true,false,true,false,true,false,true,false,true,false,true,false,true,false,true,false,true,false,true,false,true].to_vec());
@@ -575,24 +561,22 @@ use tests::std::vec::*;
 		let mut encoder = BmLite::new(spi, dummy_cs,dummy_reset,dummy_irq );
 		let ans = encoder.identify();
         match ans {
-            Err(x) => {assert!(false, "Function returned unexpected error")}
+            Err(_) => {assert!(false, "Function returned unexpected error")}
             Ok(_) => {}
         }
 
         let (mut spi, (_a,_b,_c)) = encoder.teardown();
         spi.done();
-
 	}
+
 	#[test]
     #[should_panic]
 	fn capture_identify_nodata() {
 		use super::*;
         let expectations = [
-
-
         ];
 
-        let mut spi = SpiMock::new(&expectations);
+        let spi = SpiMock::new(&expectations);
 
         let dummy_cs = DummyInterface::new([false,false,false].to_vec());
         let dummy_irq = DummyInterface::new([false,true,false,true,false,true,false,true,false,true,false,true,false,true,false,true,false,true,false,true,false,true,false,true].to_vec());
@@ -601,14 +585,14 @@ use tests::std::vec::*;
 		let mut encoder = BmLite::new(spi, dummy_cs,dummy_reset,dummy_irq );
 		let ans = encoder.identify();
         match ans {
-            Err(x) => {assert!(false, "Function returned unexpected error")}
+            Err(_x) => {assert!(false, "Function returned unexpected error")}
             Ok(_) => {}
         }
 
         let (mut spi, (_a,_b,_c)) = encoder.teardown();
         spi.done();
-
 	}
+
 	#[test]
 	fn delete_all_templates() {
 		use super::*;
@@ -631,7 +615,7 @@ use tests::std::vec::*;
 
         ];
 
-        let mut spi = SpiMock::new(&expectations);
+        let spi = SpiMock::new(&expectations);
 
         let dummy_cs = DummyInterface::new([false,false,false].to_vec());
         let dummy_irq = DummyInterface::new([false,true,false,true,false,true,false,true,false,true,false,true].to_vec());
@@ -640,14 +624,14 @@ use tests::std::vec::*;
 		let mut encoder = BmLite::new(spi, dummy_cs,dummy_reset,dummy_irq );
 		let ans = encoder.delete_all();
         match ans {
-            Err(x) => {assert!(false, "Function returned unexpected error")}
+            Err(_x) => {assert!(false, "Function returned unexpected error")}
             Ok(_) => {}
         }
 
         let (mut spi, (_a,_b,_c)) = encoder.teardown();
         spi.done();
-
 	}
+
     #[test]
     fn capture_image() {
 		use super::*;
@@ -661,7 +645,7 @@ use tests::std::vec::*;
                 SpiTransaction::transfer([0x7f,0xff,0x01,0x7f].to_vec(),[0,0,0,0].to_vec()),
         ];
 
-        let mut spi = SpiMock::new(&expectations);
+        let spi = SpiMock::new(&expectations);
 
         let dummy_cs = DummyInterface::new([false,false,false].to_vec());
         let dummy_irq = DummyInterface::new([false,true,false,true,false,true,false,true,false,true,false,true,false,true,false,true,false,true,false,true,false,true,false,true].to_vec());
@@ -670,7 +654,7 @@ use tests::std::vec::*;
 		let mut encoder = BmLite::new(spi, dummy_cs,dummy_reset,dummy_irq );
 		let ans = encoder.capture(0);
         match ans {
-            Err(x) => {assert!(false, "Function returned unexpected error")}
+            Err(_x) => {assert!(false, "Function returned unexpected error")}
             Ok(ans) => {assert!(ans == 0) }
         }
 
