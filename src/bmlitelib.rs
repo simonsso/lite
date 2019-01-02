@@ -26,6 +26,9 @@ use embedded_hal::digital::{InputPin,OutputPin};
 use embedded_hal::blocking::spi::Transfer;
 
 use byteorder::{ByteOrder,LittleEndian};
+
+// Buffer type for sending data to packages to BM Lite
+// 
 trait TransportBuffer<Output>{
     fn create_transport_buffer() -> Output;
     fn push_crc(self) ->Self;
@@ -101,7 +104,7 @@ impl TransportBuffer<Vec<u8>> for Vec<u8>
 		self.push_u16(arg).push_u16(4).push_u32(data)
     }
 }
-
+// Buffer type for reading from sensor
 trait LinkBuffer{
     fn parse_result<Closure,E>(&self,u16, f:Closure  ) ->Result<(), Error<E>>
     where Closure:FnMut(u16,&[u8],usize);
@@ -143,13 +146,15 @@ impl LinkBuffer for Vec<u8>{
         Ok(())
     }
 }
-
+/// BM Lite interface class
+/// spi interface implementing transfer trait
+/// cs,rst and irq gpio pins
+/// 
 pub struct BmLite<SPI,CS,RST,IRQ> {
 	spi: SPI,
 	cs: CS,
     rst: RST,
     irq: IRQ,
-    enrolledfingers: u16,
 }
 
 pub enum Error<E>{
@@ -163,7 +168,8 @@ pub enum Error<E>{
 const    ARG_RESULT:u16 =  0x2001;
 const    ARG_COUNT:u16 =   0x2002;
 const    _ARG_TIMEOUT:u16 = 0x5001;
-const    _ARG_VERSION:u16 = 0x6004;
+const    ARG_VERSION:u16 = 0x6003;
+const    ARG_GET:u16     = 0x1004;
 const    ARG_MATCH:u16 =   0x000A;
 const    ARG_ID:u16 =      0x0006;
 
@@ -181,7 +187,7 @@ where  SPI: Transfer<u8, Error = E>,
 	    /// Creates a new driver from an SPI peripheral and a chip select
     /// digital I/O pin.
     pub fn new(spi: SPI, cs: CS, rst: RST, irq: IRQ) -> Self {
-        let en= BmLite { spi: spi, cs: cs, rst: rst, irq: irq , enrolledfingers : 0 };
+        let en= BmLite { spi: spi, cs: cs, rst: rst, irq: irq };
 
         en
     }
@@ -191,7 +197,7 @@ where  SPI: Transfer<u8, Error = E>,
         (self.spi,(self.cs,self.rst,self.irq))
     }
 
-
+    /// Reset sensor MCU subsystem. Provide a delay in closure      
 	pub fn reset<DelayClass>(&mut self,mut d: DelayClass) -> Result<u8, Error<E>> 
         where DelayClass: FnMut()
     {
@@ -283,25 +289,27 @@ where  SPI: Transfer<u8, Error = E>,
         Ok(v.split_off(6))
     }
 
-	pub fn get_version(&mut self) -> Result<u8, Error<E>>  {
+	pub fn get_version(&mut self) -> Result<Vec<u8>, Error<E>>  {
         let cmd = 0x3004;
-        let transport = <Vec<u8> as TransportBuffer<Vec<u8>>>::create_transport_buffer().set_cmd(cmd).add_arg(0x1004);
+        
+        let transport = <Vec<u8> as TransportBuffer<Vec<u8>>>::create_transport_buffer().set_cmd(cmd).add_arg(ARG_GET).add_arg(ARG_VERSION);
         let resp=self.link(transport)?;
 
         // handle all responses here
         let mut ok_resp = false;
-        resp.parse_result(cmd, |arg,_argv,_arglen|{
+        let mut version:Vec<u8> = Vec::with_capacity(64);
+        resp.parse_result(cmd, |arg,argv,_arglen|{
             match arg {
                ARG_RESULT => {ok_resp = true}
-            //   ARG_MATCH  => { litematch = (LittleEndian::read_uint(&argv,arglen) & 0xFFFF_FFFF )as u32; }
+               ARG_VERSION  => { version.extend_from_slice(&argv); }
             //   ARG_ID  => { remaining = (LittleEndian::read_uint(&argv,arglen) & 0xFFFF_FFFF )as u32; }
                 _other => {} // For args we do not care about
             }
         })?;
-        if ! ok_resp {
-             return Err(Error::UnexpectedResponse)
+        if ok_resp && version.len() > 1 {
+             return Ok(version);
         }
-        Ok(0)
+         Err(Error::UnexpectedResponse)
     }
     // Timeout in ms but 0 waits forever
 	pub fn capture(&mut self, timeout:u32) -> Result<u8, Error<E>>  {
@@ -330,6 +338,7 @@ where  SPI: Transfer<u8, Error = E>,
 	pub fn enroll<F>(&mut self, mut f:F ) -> Result<u32, Error<E>>
         where F:FnMut(u32)
     {
+        let next_template_id = 1 + self.get_template_count()?;
         let mut enrolling = 100;
         f(enrolling as u32);
         self.do_enroll(0x03)?; //begin
@@ -340,9 +349,7 @@ where  SPI: Transfer<u8, Error = E>,
             enrolling = self.do_enroll(0x04)?; //add image
         }
         self.do_enroll(0x05)?; //done
-        let e = self.enrolledfingers;
-        self.do_savetemplate(e)?;
-        self.enrolledfingers += 1;
+        self.do_savetemplate(next_template_id as u16)?;
         Ok(0)
     }
 
@@ -387,6 +394,27 @@ where  SPI: Transfer<u8, Error = E>,
         Err(Error::UnexpectedResponse)
     }
 
+    pub fn get_template_count(&mut self) -> Result<u32,Error<E>>{
+        const ARG_COUNT:u16 = 0x2002;
+        const CMD_STORAGE_TEMPLATE:u16 = 0x4002;
+        let cmd = CMD_STORAGE_TEMPLATE;
+        let transport = <Vec<u8> as TransportBuffer<Vec<u8>>>::create_transport_buffer().set_cmd(cmd).add_arg(ARG_COUNT);
+        let resp=self.link(transport)?;
+        // handle all responses here
+        let mut ok_resp = false;
+        let mut template_count = 0;
+        resp.parse_result(cmd, |arg,argv,arglen|{
+            match arg {
+               ARG_RESULT => {ok_resp = true}
+               ARG_COUNT => { template_count = (LittleEndian::read_uint(&argv,arglen) & 0xFFFF_FFFF )as u32;}
+                _other => {} // For args we do not care about
+            }
+        })?;
+        if !ok_resp {
+            return Err(Error::UnexpectedResponse);
+        }
+        Ok(template_count)
+    }
 
 	pub fn do_extract(&mut self) -> Result<u32, Error<E>>  {
         let cmd = 0x0005;
@@ -597,9 +625,6 @@ use tests::std::vec::*;
 	fn delete_all_templates() {
 		use super::*;
 
-		//dummy.readdatav.push(vec!(0,0,01,0));
-	    //dummy.readdatav.push(vec!(0x3,0x7f,01,0x7f));
-		//dummy.readdatav.push(vec!(0xff,0x7f,01,0x7f));
         // Configure expectations
 
 		let refvec:Vec<u8>   = [0x01,0x00,0x12,0x00,0x0c,0x00,0x01,0x00,0x01,0x00,0x02,0x40,0x02,0x00,0x09,0x10,0x00,0x00,0x07,0x00,0x00,0x00,0xb1,0x2e,0x45,0x93].to_vec();
@@ -611,8 +636,6 @@ use tests::std::vec::*;
             SpiTransaction::transfer([0,0,0,0].to_vec(),[0x00,0x00,0x0F,0x00].to_vec()),
             SpiTransaction::transfer([0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,].to_vec(),[0x09,0x00,0x01,0x00,0x01,0x00,0x02,0x40,0x01,0x00,0x01,0x20,0x01,0x00,0x00,0xab,0x1f,0x35,0x80,].to_vec()),
             SpiTransaction::transfer([0x7f,0xff,0x01,0x7f].to_vec(),[0,0,0,0].to_vec()),
-
-
         ];
 
         let spi = SpiMock::new(&expectations);
