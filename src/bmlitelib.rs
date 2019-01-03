@@ -521,27 +521,88 @@ where  SPI: Transfer<u8, Error = E>,
 #[cfg(test)]
 mod tests {
 use tests::std::cell::RefCell;
+use tests::std::fmt;
+use tests::std::format;
+use tests::std::string::String;
 
-struct DummyInterface {
+struct DigitalIOMock {
+    name:  &'static str,
 	data:  RefCell<Vec<bool>>,
+    last:  RefCell<bool>,
+    count: RefCell<usize>,
+    enforce:bool,
 }
-impl DummyInterface{
-    fn new(l:Vec<bool>)-> Self{
-        DummyInterface{ data:RefCell::new(l) }
+impl DigitalIOMock{
+    fn new(name:&'static str, l:Vec<bool>)-> Self{
+        DigitalIOMock{ name: name,
+                       data: RefCell::new(l),
+                       last: RefCell::new(false),
+                       count: RefCell::new(0),
+                       enforce: true }
+    }
+    fn monitor(name:&'static str)-> Self{
+        DigitalIOMock{ name: name,
+                       data: RefCell::new(Vec::new()),
+                       last: RefCell::new(false),
+                       count: RefCell::new(0),
+                       enforce: false }
+    }
+    fn inc(&self) -> usize {
+        *self.count.borrow_mut() += 1;
+        self.count.borrow().clone()
+    }
+    fn print(&self) -> String {
+        let mut s = format !("new(\"{}\",[", self.name  );
+        for i in self.data.borrow().iter() {
+            s.push_str(&format!("{},",i));
         }
+        s.push_str("].to_vec());");
+        s
+    }
 }
-impl super::OutputPin for DummyInterface {
+
+impl super::OutputPin for DigitalIOMock {
 	fn set_low(&mut self ) {
-	    self.data.borrow_mut().push(false)	
+        if self.enforce {
+            let num = self.inc();
+            if num > self.data.borrow_mut().len() {
+                assert!(false,"Vector {} out of bounds at {}",self.name, num)
+            }
+            let v = self.data.borrow();
+            let refdata = v[num -1];
+            assert!( refdata == false , "refdata {} unexpected at {}",self.name, num)
+        }else{
+            // Record tranactions for later analysis
+            self.data.borrow_mut().push(false)
+        }
 	}
 	fn set_high(&mut self) {
-	    self.data.borrow_mut().push(true)	
-	}
+        if self.enforce {
+            let num = self.inc();
+            if num > self.data.borrow_mut().len() {
+                assert!(false,"Vector {} out of bounds at {}",self.name, num)
+            }
+            let v = self.data.borrow();
+            let refdata = v[num -1];
+            assert!( refdata == true , "refdata {} unexpected at {}",self.name, num)
+        }else{
+            // Record tranactions for later analysis
+            self.data.borrow_mut().push(true)
+        }
+    }
 }
 
-impl super::InputPin for DummyInterface {
-	fn is_high(&self ) -> bool { 
-	    self.data.borrow_mut().pop().unwrap()
+impl super::InputPin for DigitalIOMock {
+	fn is_high(&self ) -> bool {
+        let num = self.inc();
+        if num > self.data.borrow_mut().len() {
+            assert!(false, "Vector out of bounds: Returning last known state") ;
+            return self.last.borrow().clone();
+        }  
+        let v = self.data.borrow();
+        let refdata = v[num -1];
+        self.last.replace(refdata);
+        refdata
 	}
 	fn is_low(&self) -> bool{
 	    ! self.is_high()
@@ -582,9 +643,9 @@ use tests::std::vec::*;
 
         let spi = SpiMock::new(&expectations);
 
-        let dummy_cs = DummyInterface::new([false,false,false].to_vec());
-        let dummy_irq = DummyInterface::new([false,true,false,true,false,true,false,true,false,true,false,true,false,true,false,true,false,true,false,true,false,true,false,true].to_vec());
-        let dummy_reset = DummyInterface::new([false].to_vec());
+        let dummy_cs = DigitalIOMock::new("spi-cs", [false,true,false,true,false,true,false,true,false,true,false,true,false,true,false,true,false,true,false,true,false,true,false,true,false,true,false,true,false,true,].to_vec());
+        let dummy_irq = DigitalIOMock::new("spi-irq",[false,true,false,true,false,true,false,true,false,true,false,true,false,true,false,true,false,true,false,true,false,true,false,true].to_vec());
+        let dummy_reset = DigitalIOMock::new("spi-rst",[false].to_vec());
 
 		let mut encoder = BmLite::new(spi, dummy_cs,dummy_reset,dummy_irq );
 		let ans = encoder.identify();
@@ -592,8 +653,60 @@ use tests::std::vec::*;
             Err(_) => {assert!(false, "Function returned unexpected error")}
             Ok(_) => {}
         }
+        
+        let (mut spi, (_cs,_b,_c)) = encoder.teardown();
+        spi.done();
+	}
+	#[test]
+	fn reset_system() {
+		use super::*;
+        let expectations = [
+        ];
 
-        let (mut spi, (_a,_b,_c)) = encoder.teardown();
+        let spi = SpiMock::new(&expectations);
+
+        
+        let dummy_cs = DigitalIOMock::new("spi-cs",[].to_vec());
+        let dummy_irq = DigitalIOMock::new("spi-irq",[].to_vec());
+        let dummy_reset = DigitalIOMock::new("spi-rst",[false,true].to_vec());
+
+		let mut encoder = BmLite::new(spi, dummy_cs,dummy_reset,dummy_irq );
+        let mut callback_cnt = 0;
+		let ans = encoder.reset(||{callback_cnt = callback_cnt +1});
+        match ans {
+            Err(_) => {assert!(false, "Function returned unexpected error")}
+            Ok(_) => {}
+        }
+        assert!(callback_cnt == 1);
+        let (mut spi, (_cs,_b,_c)) = encoder.teardown();
+ 
+        spi.done();
+	}
+	#[test]
+    #[should_panic]
+
+	fn reset_system_unsync() {
+		use super::*;
+        let expectations = [
+        ];
+
+        let spi = SpiMock::new(&expectations);
+
+        
+        let dummy_cs = DigitalIOMock::new("spi-cs",[].to_vec());
+        let dummy_irq = DigitalIOMock::new("spi-irq",[].to_vec());
+        let dummy_reset = DigitalIOMock::new("spi-rst",[true, false,true].to_vec());
+
+		let mut encoder = BmLite::new(spi, dummy_cs,dummy_reset,dummy_irq );
+        let mut callback_cnt = 0;
+		let ans = encoder.reset(||{callback_cnt = callback_cnt +1});
+        match ans {
+            Err(_) => {assert!(false, "Function returned unexpected error")}
+            Ok(_) => {}
+        }
+        assert!(callback_cnt == 1);
+        let (mut spi, (_cs,_b,_c)) = encoder.teardown();
+ 
         spi.done();
 	}
 
@@ -606,9 +719,10 @@ use tests::std::vec::*;
 
         let spi = SpiMock::new(&expectations);
 
-        let dummy_cs = DummyInterface::new([false,false,false].to_vec());
-        let dummy_irq = DummyInterface::new([false,true,false,true,false,true,false,true,false,true,false,true,false,true,false,true,false,true,false,true,false,true,false,true].to_vec());
-        let dummy_reset = DummyInterface::new([false].to_vec());
+        
+        let dummy_cs = DigitalIOMock::new("spi-cs",[false,true,false,true,false,true,false,true,false,true,].to_vec());
+        let dummy_irq = DigitalIOMock::new("spi-irq",[false,true,false,true,false,true,false,true,false,true,false,true,false,true,false,true,false,true,false,true,false,true,false,true].to_vec());
+        let dummy_reset = DigitalIOMock::new("spi-rst",[false].to_vec());
 
 		let mut encoder = BmLite::new(spi, dummy_cs,dummy_reset,dummy_irq );
 		let ans = encoder.identify();
@@ -617,7 +731,8 @@ use tests::std::vec::*;
             Ok(_) => {}
         }
 
-        let (mut spi, (_a,_b,_c)) = encoder.teardown();
+        let (mut spi, (_cs,_b,_c)) = encoder.teardown();
+ 
         spi.done();
 	}
 
@@ -640,9 +755,9 @@ use tests::std::vec::*;
 
         let spi = SpiMock::new(&expectations);
 
-        let dummy_cs = DummyInterface::new([false,false,false].to_vec());
-        let dummy_irq = DummyInterface::new([false,true,false,true,false,true,false,true,false,true,false,true].to_vec());
-        let dummy_reset = DummyInterface::new([false].to_vec());
+        let dummy_cs = DigitalIOMock::new("spi-cs",[false,true,false,true,false,true,false,true,false,true,].to_vec());
+        let dummy_irq = DigitalIOMock::new("spi-irq",[false,true,false,true,false,true,false,true,false,true,false,true].to_vec());
+        let dummy_reset = DigitalIOMock::new("spi-rst",[false].to_vec());
 
 		let mut encoder = BmLite::new(spi, dummy_cs,dummy_reset,dummy_irq );
 		let ans = encoder.delete_all();
@@ -670,9 +785,9 @@ use tests::std::vec::*;
 
         let spi = SpiMock::new(&expectations);
 
-        let dummy_cs = DummyInterface::new([false,false,false].to_vec());
-        let dummy_irq = DummyInterface::new([false,true,false,true,false,true,false,true,false,true,false,true,false,true,false,true,false,true,false,true,false,true,false,true].to_vec());
-        let dummy_reset = DummyInterface::new([false].to_vec());
+        let dummy_cs = DigitalIOMock::new("spi-cs",[false,true,false,true,false,true,false,true,false,true,].to_vec());
+        let dummy_irq = DigitalIOMock::new("spi-irq",[false,true,false,true,false,true,false,true,false,true,false,true,false,true,false,true,false,true,false,true,false,true,false,true].to_vec());
+        let dummy_reset = DigitalIOMock::new("spi-rst",[false].to_vec());
 
 		let mut encoder = BmLite::new(spi, dummy_cs,dummy_reset,dummy_irq );
 		let ans = encoder.capture(0);
