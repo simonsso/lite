@@ -1,11 +1,7 @@
-// Basic Architecture
-// Class BmLite
-// function DeleteAll
-// function Enroll
-// function Verify
+//! 
+//! ## BM Lite
+//! 
 
-//#![deny(missing_docs)]
-//#![deny(warnings)]
 #![feature(unsize)]
 #![no_std]
 
@@ -177,7 +173,48 @@ fn as_u16(h:u8,l:u8) -> u16{
     ((h as u16)<<8)|(l as u16)
 }
 
-
+////  ## Usage
+///```
+/// extern crate bmlite;
+/// # extern crate embedded_hal_mock;
+/// use bmlite::*;
+///
+///    # use embedded_hal_mock::spi::{Mock as Spi, Transaction as SpiTransaction};
+///    # use embedded_hal_mock::gpio::*;
+///    let options = [
+///                        /* ... */
+///    #         SpiTransaction::transfer([0x01,0x00,0x0a,0x00,0x04,0x00,0x01,0x00,0x01,0x00,0x01,0x00,0x00,0x00,0x52,0x7c,0x2b,0x55,].to_vec(),[0;18].to_vec()),
+///    #         SpiTransaction::transfer([0,0,0,0].to_vec(),[0x7f,0xff,0x01,0x7f].to_vec()),
+///    #         SpiTransaction::transfer([0,0,0,0].to_vec() ,[0,0,17-2,0].to_vec()),
+///    #         SpiTransaction::transfer([0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,].to_vec(),[0x09,0x00,0x01,0x00,0x01,0x00,0x01,0x00,0x01,0x00,0x01,0x20,0x01,0x00,0x00,0x83,0xe1,0x25,0x90,].to_vec()),
+///    #         SpiTransaction::transfer([0x7f,0xff,0x01,0x7f].to_vec(),[0,0,0,0].to_vec()),
+///    #         SpiTransaction::transfer([0x01,0x00,0x0e,0x00,0x08,0x00,0x01,0x00,0x01,0x00,0x05,0x00,0x01,0x00,0x08,0x00,0x00,0x00,0x8e,0xb5,0x8d,0xd0,].to_vec(),[0;22].to_vec()),
+///    #         SpiTransaction::transfer([0,0,0,0].to_vec(),[0x7f,0xff,0x01,0x7f].to_vec()),
+///    #         SpiTransaction::transfer([0,0,0,0].to_vec() ,[0,0,17-2,0].to_vec()),
+///    #         SpiTransaction::transfer([0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,].to_vec(),[0x09,0x00,0x01,0x00,0x01,0x00,0x05,0x00,0x01,0x00,0x01,0x20,0x01,0x00,0x00,0x8f,0xb0,0xc9,0xcd,].to_vec()),
+///    #         SpiTransaction::transfer([0x7f,0xff,0x01,0x7f].to_vec(),[0,0,0,0].to_vec()),
+///    #         SpiTransaction::transfer([0x01,0x00,0x0a,0x00,0x04,0x00,0x01,0x00,0x01,0x00,0x03,0x00,0x00,0x00,0xd9,0xb4,0x22,0xff,].to_vec(),[0;18].to_vec()),
+///    #         SpiTransaction::transfer([0,0,0,0].to_vec(),[0x7f,0xff,0x01,0x7f].to_vec()),
+///    #         SpiTransaction::transfer([0,0,0,0].to_vec() ,[0,0,28-2,0].to_vec()),
+///    #         SpiTransaction::transfer([0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,].to_vec(),[0x14,0x00,0x01,0x00,0x01,0x00,0x03,0x00,0x03,0x00,0x0a,0x00,0x01,0x00,0x01,0x06,0x00,0x02,0x00,0x01,0x00,0x01,0x20,0x01,0x00,0x00,0x26,0xf0,0xb5,0xf2,].to_vec()),
+///    #         SpiTransaction::transfer([0x7f,0xff,0x01,0x7f].to_vec(),[0,0,0,0].to_vec()),
+///    ];
+///    //    create spi as descibed by emnedded hal implemnetion
+///    let spi = Spi::new(&options /* ... */ );
+///    #     let cs = DigitalIOMock::new("spi-cs", [false,true,false,true,false,true,false,true,false,true,false,true,false,true,false,true,false,true,false,true,false,true,false,true,false,true,false,true,false,true,].to_vec());
+///    #     let irq = DigitalIOMock::new("spi-irq",[false,true,false,true,false,true,false,true,false,true,false,true,false,true,false,true,false,true,false,true,false,true,false,true].to_vec());
+///    #     let reset = DigitalIOMock::new("spi-rst",[false].to_vec());
+///    let mut bm = BmLite::new(spi, cs,reset,irq );
+///    let ans = bm.identify();
+///    match ans {
+///       // Not identified 
+///       Err(_) => {assert!(false, "Function returned unexpected error")}
+///       // User identiy is returned in Ok
+///       Ok(x) => { assert!(x==1)}
+///    }       
+///    #    let (mut spi, (_cs,_b,_c)) = bm.teardown();
+///    #    spi.done();
+/// ```
 impl <SPI,CS,RST,IRQ, E> BmLite<SPI,CS,RST,IRQ>
 where  SPI: Transfer<u8, Error = E>,
 	CS: OutputPin,
@@ -520,99 +557,12 @@ where  SPI: Transfer<u8, Error = E>,
 
 #[cfg(test)]
 mod tests {
-use tests::std::cell::RefCell;
-use tests::std::fmt;
-use tests::std::format;
-use tests::std::string::String;
 
-struct DigitalIOMock {
-    name:  &'static str,
-	data:  RefCell<Vec<bool>>,
-    last:  RefCell<bool>,
-    count: RefCell<usize>,
-    enforce:bool,
-}
-impl DigitalIOMock{
-    fn new(name:&'static str, l:Vec<bool>)-> Self{
-        DigitalIOMock{ name: name,
-                       data: RefCell::new(l),
-                       last: RefCell::new(false),
-                       count: RefCell::new(0),
-                       enforce: true }
-    }
-    fn monitor(name:&'static str)-> Self{
-        DigitalIOMock{ name: name,
-                       data: RefCell::new(Vec::new()),
-                       last: RefCell::new(false),
-                       count: RefCell::new(0),
-                       enforce: false }
-    }
-    fn inc(&self) -> usize {
-        *self.count.borrow_mut() += 1;
-        self.count.borrow().clone()
-    }
-    fn print(&self) -> String {
-        let mut s = format !("new(\"{}\",[", self.name  );
-        for i in self.data.borrow().iter() {
-            s.push_str(&format!("{},",i));
-        }
-        s.push_str("].to_vec());");
-        s
-    }
-}
-
-impl super::OutputPin for DigitalIOMock {
-	fn set_low(&mut self ) {
-        if self.enforce {
-            let num = self.inc();
-            if num > self.data.borrow_mut().len() {
-                assert!(false,"Vector {} out of bounds at {}",self.name, num)
-            }
-            let v = self.data.borrow();
-            let refdata = v[num -1];
-            assert!( refdata == false , "refdata {} unexpected at {}",self.name, num)
-        }else{
-            // Record tranactions for later analysis
-            self.data.borrow_mut().push(false)
-        }
-	}
-	fn set_high(&mut self) {
-        if self.enforce {
-            let num = self.inc();
-            if num > self.data.borrow_mut().len() {
-                assert!(false,"Vector {} out of bounds at {}",self.name, num)
-            }
-            let v = self.data.borrow();
-            let refdata = v[num -1];
-            assert!( refdata == true , "refdata {} unexpected at {}",self.name, num)
-        }else{
-            // Record tranactions for later analysis
-            self.data.borrow_mut().push(true)
-        }
-    }
-}
-
-impl super::InputPin for DigitalIOMock {
-	fn is_high(&self ) -> bool {
-        let num = self.inc();
-        if num > self.data.borrow_mut().len() {
-            assert!(false, "Vector out of bounds: Returning last known state") ;
-            return self.last.borrow().clone();
-        }  
-        let v = self.data.borrow();
-        let refdata = v[num -1];
-        self.last.replace(refdata);
-        refdata
-	}
-	fn is_low(&self) -> bool{
-	    ! self.is_high()
-    }
-}
 
 extern crate embedded_hal_mock;
 extern crate std;
 use tests::embedded_hal_mock::spi::{Mock as SpiMock, Transaction as SpiTransaction};
-use tests::std::vec::*;
+use tests::embedded_hal_mock::gpio::*;
 	#[test]
 	fn capture_identify() {
 		use super::*;
@@ -651,7 +601,7 @@ use tests::std::vec::*;
 		let ans = encoder.identify();
         match ans {
             Err(_) => {assert!(false, "Function returned unexpected error")}
-            Ok(_) => {}
+            Ok(x) => { assert!(x==1)}
         }
         
         let (mut spi, (_cs,_b,_c)) = encoder.teardown();
